@@ -3,10 +3,9 @@ import std::traits::hash::{ hash_bytes }
 
 import .value::{ String, Value }
 
-//! Since the {{String}} value type is meant to be compared by
-//! pointer equality, we need to wrap it in a special struct that
-//! does actual character comparison when actually interning the
-//! string
+//! Wrapper around a string that forces comparison by value, not
+//! just by a pointer (like for the interned strings we use in
+//! the rest of the language).
 struct ValueCompareString {
     data: str
     len: u32

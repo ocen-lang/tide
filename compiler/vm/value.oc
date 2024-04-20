@@ -49,6 +49,8 @@ def Value::as_int(this): i32 => .u.uint as i32
 def Value::is_obj(this): bool => .u.uint & NAN_MASK == OBJECT_MASK
 def Value::as_obj(this): &Object => (.u.uint & 0xFFFFFFFFFFFF) as &Object
 
+def Value::as_string(this): &String => .as_obj() as &String
+
 def Value::is_obj_type(this, type: ObjectType): bool {
     if not .is_obj() return false
     return .as_obj().type == type
@@ -60,6 +62,8 @@ def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
 def Value::Null(): Value => Value::from_uint(NULL_VALUE)
 def Value::Int(i: i32): Value => Value::from_uint(i as u64 | INT_MASK)
 def Value::Object(obj: &Object): Value => Value::from_uint(obj as u64 | OBJECT_MASK)
+def Value::String(s: &String): Value => Value::Object(s as &Object)
+
 
 def Value::type_str(this): str {
     if .is_float() return "float";

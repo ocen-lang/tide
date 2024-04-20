@@ -7,11 +7,9 @@ import std::sv::{ SV }
 
 import std::libc::calloc
 import @tokens::{ TokenType, Token }
-import @ast::program::Namespace
 
 enum ASTType {
     Assert
-    Block
     BoolLiteral
     Break
     Call
@@ -44,6 +42,13 @@ enum ASTType {
 
     UnaryOp
     BinaryOp
+
+    // Top-level
+    Block
+    Function
+    Class
+    Enum
+    Namespace
 }
 
 struct Variable {
@@ -62,19 +67,19 @@ struct VarDeclaration {
     init: &AST
 }
 
-struct Structure {
+struct Class {
     sym: &Symbol
     fields: &Vector<&Variable>
     span: Span
 }
 
-def Structure::new(): &Structure {
-    let struc = std::new<Structure>()
+def Class::new(): &Class {
+    let struc = std::new<Class>()
     struc.fields = Vector<&Variable>::new()
     return struc
 }
 
-def Structure::get_field(&this, name: str): &Variable {
+def Class::get_field(&this, name: str): &Variable {
     for field : .fields.iter() {
         if field.sym.name.eq(name) {
             return field
@@ -416,6 +421,19 @@ struct ArrayLiteral {
     elements: &Vector<&AST>
 }
 
+struct Namespace {
+    parent: &Namespace
+    statements: &Vector<&AST>
+    sym: &Symbol
+    span: Span
+}
+
+def Namespace::new(): &Namespace {
+    let ns = std::new<Namespace>()
+    ns.statements = Vector<&AST>::new()
+    return ns
+}
+
 union ASTUnion {
     assertion: Assertion
     binary: Binary
@@ -437,6 +455,10 @@ union ASTUnion {
     match_stmt: Match
     array_literal: ArrayLiteral
     child: &AST
+    func: &Function
+    class: &Class
+    enom: &Enum
+    ns: &Namespace
 }
 
 struct AST {
@@ -497,7 +519,7 @@ enum SymbolType {
 
 union SymbolUnion {
     func: &Function
-    struc: &Structure
+    struc: &Class
     enum_: &Enum
     ns: &Namespace
     var: &Variable
@@ -508,11 +530,8 @@ struct Symbol {
     name: str
     //* Fully qualified display name, including namespaces
     display: str
-
     //* Span of the declaration
     span: Span
-    //* Namespace it was defined in
-    ns: &Namespace
 
     //* Comment attached to the declaration
     comment: SV
@@ -522,32 +541,30 @@ struct Symbol {
     u: SymbolUnion
 }
 
-def Symbol::new(type: SymbolType, ns: &Namespace, name: str, display: str, span: Span): &Symbol {
+def Symbol::new(type: SymbolType, name: str, display: str, span: Span): &Symbol {
     let item = std::new<Symbol>()
     item.name = name
     item.display = display
     item.span = span
     item.type = type
-    item.ns = ns
     return item
 }
 
 def Symbol::join_display(a: str, b: str): str => if a.len() == 0 then b else `{a}::{b}`
 def Symbol::join_full_name(a: str, b: str): str => if a.len() == 0 then b else `{a}_{b}`
 
-def Symbol::new_with_parent(type: SymbolType, ns: &Namespace, parent: &Symbol, name: str, span: Span): &Symbol {
+def Symbol::new_with_parent(type: SymbolType, parent: &Symbol, name: str, span: Span): &Symbol {
     let display = Symbol::join_display(parent.display, name)
-    return Symbol::new(type, ns, name, display, span)
+    return Symbol::new(type, name, display, span)
 }
 
 def Symbol::update_parent(&this, parent: &Symbol) {
     .display = Symbol::join_display(parent.display, .name)
 }
 
-def Symbol::from_local_variable(name: str, var: &Variable, span: Span): &Symbol {
+def Symbol::from_variable(name: str, var: &Variable, span: Span): &Symbol {
     let item = Symbol::new(
         SymbolType::Variable,
-        ns: null,
         name: name,
         display: name,
         span: span,

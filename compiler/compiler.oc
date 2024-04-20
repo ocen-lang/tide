@@ -2,7 +2,6 @@ import std::vector::{ Vector }
 import std::span::{ Span }
 
 import @ast::nodes::{ AST }
-import @ast::program::{ Program, Namespace }
 import @bytecode::chunk::{ Chunk,  }
 import @bytecode::instruction::{ Instruction, OpCode  }
 import @vm::{ VM }
@@ -19,8 +18,9 @@ def Compiler::make(vm: &VM, span: Span): Compiler {
 }
 
 def Compiler::make_str(&this, text: str): Value {
-    let s = .vm.string_pool.copy_string(text, text.len())
-    return Value::Object(&s.obj)
+    return Value::String(
+        .vm.string_pool.copy_string(text, text.len())
+    )
 }
 
 def Compiler::compile_statement(&this, stmt: &AST) {
@@ -68,17 +68,18 @@ def Compiler::compile_statement(&this, stmt: &AST) {
     }
 }
 
-def Compiler::compile_ns(&this, ns: &Namespace) {
-    for stmt in ns.statements.iter() {
+def Compiler::compile(&this, root: &AST) {
+    assert root.type == Namespace, "Root node must be a namespace."
+
+    for stmt in root.u.ns.statements.iter() {
         .compile_statement(stmt)
     }
-    .chunk.push(Instruction::make(Return), ns.span)
+    .chunk.push(Instruction::make(Return), root.span)
 }
 
 // TODO: More complex structures than just expressions?
-def compile_program(vm: &VM, program: &Program): &Chunk {
-    let global_ns = program.global
-    let compiler = Compiler::make(vm, global_ns.span)
-    compiler.compile_ns(global_ns)
+def compile_program(vm: &VM, root: &AST): &Chunk {
+    let compiler = Compiler::make(vm, root.span)
+    compiler.compile(root)
     return compiler.chunk
 }

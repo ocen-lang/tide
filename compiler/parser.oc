@@ -1,15 +1,15 @@
-//* The parser
+ //* The parser
 
 import std::buffer::{ Buffer }
 import std::map::{ Map }
 import std::span::{ Span, Location }
 import std::vector::{ Vector }
+import std::setjmp::{ ErrorContext }
 import std::fs
 
 import @ast::nodes::{ * }
-import @ast::program::{ Namespace, Program }
 import @ast::attributes::{ Attribute, AttributeType }
-import @errors::Error
+import @errors::{ Error, display_error_messages }
 import @lexer::Lexer
 import @tokens::{ Token, TokenType }
 import @utils::directory_exists
@@ -22,26 +22,29 @@ struct Parser {
     tokens: &Vector<&Token>
     curr: u32
 
-    curr_func: &Function
-    program: &Program
-    ns: &Namespace
-
     attrs: &Vector<&Attribute>
     attrs_span: Span
     attrs_start_tok: &Token
+
+    cur_func: &Function
+    ns: &Namespace
+
+    err_jmp_ctx: ErrorContext
+    errors: &Vector<&Error>
 }
 
-def Parser::make(program: &Program, ns: &Namespace): Parser {
-    return Parser(
-        tokens: null,
-        curr: 0,
-        curr_func: null,
-        program: program,
-        ns: ns,
-        attrs: Vector<&Attribute>::new(),
-        attrs_span: Span::default(),
-        attrs_start_tok: null,
-    )
+def Parser::exit_with_errors_if_any(&this) {
+    if .errors.size > 0 {
+        display_error_messages(.errors, detail_level: 2)
+        std::exit(1)
+    }
+}
+
+def Parser::make(): Parser {
+    let parser: Parser
+    parser.attrs = Vector<&Attribute>::new()
+    parser.errors = Vector<&Error>::new()
+    return parser
 }
 
 def Parser::peek(&this, off: i32 = 1): &Token {
@@ -52,12 +55,12 @@ def Parser::peek(&this, off: i32 = 1): &Token {
 
 def Parser::error_msg(&this, msg: str): &Error {
     let err = Error::new(.token().span, msg)
-    .program.errors.push(err)
+    .errors.push(err)
     return err
 }
 
 def Parser::error(&this, err: &Error): &Error {
-    .program.errors.push(err)
+    .errors.push(err)
     return err
 }
 
@@ -70,13 +73,13 @@ def Parser::token(&this): &Token {
         .curr = .tokens.size - 1
         // If we run out of tokens without an error, report one.
         .error_msg("Unexpected end of file")
-        .program.err_jmp_ctx.jump_back(1)
+        .err_jmp_ctx.jump_back(1)
     }
     return .tokens.unchecked_at(.curr as u32)
 }
 
 def Parser::token_is(&this, type: TokenType): bool {
-    if type == TokenType::Newline {
+    if type == Newline {
         return .token().seen_newline
     }
     return .token().type == type
@@ -93,7 +96,7 @@ def Parser::peek_token_is(&this, off: u32, type: TokenType): bool {
 def Parser::consume_if(&this, type: TokenType): bool {
     if .token_is(type) {
         // Newline tokens are special because they don't consume a token.
-        if type != TokenType::Newline {
+        if type != Newline {
             if .curr < .tokens.size - 1 then .curr += 1
         }
         return true
@@ -107,29 +110,29 @@ def Parser::consume_newline_or(&this, type: TokenType) {
 
     } else if not .token().seen_newline {
         .error_msg(`Expected {type.str()} or newline`)
-        .program.err_jmp_ctx.jump_back(1)
+        .err_jmp_ctx.jump_back(1)
     }
 }
 
 def Parser::consume(&this, type: TokenType): &Token {
     let tok = .token()
     if not .consume_if(type) {
-        .error_msg(`Expected TokenType::{type.str()}`)
-        .program.err_jmp_ctx.jump_back(1)
+        .error_msg(`Expected {type.str()}`)
+        .err_jmp_ctx.jump_back(1)
     }
     return tok
 }
 
 def Parser::is_end_of_statement(&this): bool {
-    if .token_is(TokenType::CloseCurly) return true
-    if .token_is(TokenType::Semicolon) return true
+    if .token_is(CloseCurly) return true
+    if .token_is(Semicolon) return true
     if .token().seen_newline return true
     return false
 }
 
 def Parser::consume_end_of_statement(&this) {
-    if .token_is(TokenType::CloseCurly) return
-    .consume_newline_or(TokenType::Semicolon)
+    if .token_is(CloseCurly) return
+    .consume_newline_or(Semicolon)
 }
 
 def Parser::clear_attributes(&this) {
@@ -164,8 +167,8 @@ def Parser::consume_compound_operator(&this, op: Operator): Span {
 }
 
 def Parser::parse_identifier(&this): &AST {
-    let tok = .consume(TokenType::Identifier)
-    let node = AST::new(ASTType::Identifier, tok.span)
+    let tok = .consume(Identifier)
+    let node = AST::new(Identifier, tok.span)
     node.u.ident.name = tok.text.data
     return node
 }
@@ -175,10 +178,10 @@ def Parser::parse_scoped_identifier(&this): &AST {
 
     while true {
         match .token().type {
-            TokenType::ColonColon => {
-                .consume(TokenType::ColonColon)
+            ColonColon => {
+                .consume(ColonColon)
 
-                let lookup = AST::new(ASTType::NSLookup, node.span)
+                let lookup = AST::new(NSLookup, node.span)
                 lookup.u.lookup.lhs = node
                 node = lookup
 
@@ -186,7 +189,7 @@ def Parser::parse_scoped_identifier(&this): &AST {
                     .error(Error::new(.token().span, "Expected identifier after `::`"))
                     node.span.end = .token().span.start
                 } else {
-                    let name = .consume(TokenType::Identifier)
+                    let name = .consume(Identifier)
                     node.span = node.span.join(name.span)
                     node.u.lookup.rhs_name = name.text.data
                     node.u.lookup.rhs_span = name.span
@@ -201,7 +204,7 @@ def Parser::parse_scoped_identifier(&this): &AST {
 
 
 def Parser::parse_format_string(&this): &AST {
-    let fstr = .consume(TokenType::FormatStringLiteral)
+    let fstr = .consume(FormatStringLiteral)
     let fstr_len = fstr.text.data.len()
 
     let expr_parts = Vector<str>::new()
@@ -280,7 +283,7 @@ def Parser::parse_format_string(&this): &AST {
     let part = fstr.text.data.substring(cur_start, fstr_len - cur_start)
     format_parts.push(part)
 
-    let node = AST::new(ASTType::FormatStringLiteral, fstr.span)
+    let node = AST::new(FormatStringLiteral, fstr.span)
     node.u.fmt_str.parts = format_parts
 
     let fstr_start = fstr.span.start
@@ -299,13 +302,12 @@ def Parser::parse_format_string(&this): &AST {
         }
         lexer.errors.free()
 
-        let sub_parser = Parser::make(.program, .ns)
+        let sub_parser = Parser::make()
         sub_parser.tokens = tokens
         sub_parser.curr = 0
-        sub_parser.curr_func = .curr_func
 
-        let expr = sub_parser.parse_expression(end_type: TokenType::CloseCurly)
-        if not sub_parser.token_is(TokenType::EOF) {
+        let expr = sub_parser.parse_expression(end_type: CloseCurly)
+        if not sub_parser.token_is(EOF) {
             .error(Error::new(expr.span, "Invalid expression in format string"))
         }
 
@@ -319,28 +321,28 @@ def Parser::parse_format_string(&this): &AST {
 }
 
 def Parser::parse_match(&this): &AST {
-    let op = .consume(TokenType::Match)
-    let expr = .parse_expression(end_type: TokenType::OpenCurly)
-    let node = AST::new(ASTType::Match, op.span.join(expr.span))
+    let op = .consume(Match)
+    let expr = .parse_expression(end_type: OpenCurly)
+    let node = AST::new(Match, op.span.join(expr.span))
     node.u.match_stmt.expr = expr
 
     let cases = Vector<&MatchCase>::new()
-    .consume(TokenType::OpenCurly)
-    while not .token_is(TokenType::CloseCurly) {
-        if .token_is(TokenType::Else) {
+    .consume(OpenCurly)
+    while not .token_is(CloseCurly) {
+        if .token_is(Else) {
             node.u.match_stmt.defolt_span = .token().span
-            .consume(TokenType::Else)
-            .consume(TokenType::FatArrow)
+            .consume(Else)
+            .consume(FatArrow)
             node.u.match_stmt.defolt = .parse_statement()
 
         } else {
-            let cond = .parse_atom(TokenType::Line)
+            let cond = .parse_atom(Line)
             let body = null as &AST
-            if not .consume_if(TokenType::Line) {
-                .consume(TokenType::FatArrow)
+            if not .consume_if(Line) {
+                .consume(FatArrow)
                 body = .parse_statement()
-                if not .token_is(TokenType::CloseCurly) {
-                    .consume_newline_or(TokenType::Comma)
+                if not .token_is(CloseCurly) {
+                    .consume_newline_or(Comma)
                 }
             }
             let _case = MatchCase::new(cond, body)
@@ -348,32 +350,31 @@ def Parser::parse_match(&this): &AST {
         }
     }
     node.span = op.span.join(.token().span)
-    .consume(TokenType::CloseCurly)
+    .consume(CloseCurly)
     node.u.match_stmt.cases = cases
 
     return node
 }
 
 def Parser::parse_call(&this, callee: &AST): &AST {
-    .consume(TokenType::OpenParen)
+    .consume(OpenParen)
     let args = Vector<&Argument>::new()
-    while not .token_is(TokenType::CloseParen) {
+    while not .token_is(CloseParen) {
         let label_tok: &Token = null
         if .token_is(Identifier) and .peek_token_is(1, Colon) {
-            label_tok = .consume(TokenType::Identifier)
-            .consume(TokenType::Colon)
+            label_tok = .consume(Identifier)
+            .consume(Colon)
         }
-        let expr = .parse_expression(end_type: TokenType::Comma)
+        let expr = .parse_expression(end_type: Comma)
 
         args.push(Argument::new(expr, label_tok))
-        if not .token_is(TokenType::CloseParen) {
-            .consume(TokenType::Comma)
+        if not .token_is(CloseParen) {
+            .consume(Comma)
         }
     }
 
-    let end = .consume(TokenType::CloseParen)
-    let call_type = ASTType::Call
-    let call = AST::new(call_type, callee.span.join(end.span))
+    let end = .consume(CloseParen)
+    let call = AST::new(Call, callee.span.join(end.span))
     call.u.call.callee = callee
     call.u.call.args = args
     return call
@@ -381,39 +382,39 @@ def Parser::parse_call(&this, callee: &AST): &AST {
 
 //* We also allow array literals when initializing a variable, so treat them separately.
 def Parser::parse_var_initializer(&this): &AST {
-    if .token_is(TokenType::OpenSquare) {
-        let start = .consume(TokenType::OpenSquare)
+    if .token_is(OpenSquare) {
+        let start = .consume(OpenSquare)
         let elements = Vector<&AST>::new()
-        while not .token_is(TokenType::CloseSquare) {
+        while not .token_is(CloseSquare) {
             elements.push(.parse_var_initializer())
-            if not .token_is(TokenType::CloseSquare) {
-                .consume(TokenType::Comma)
+            if not .token_is(CloseSquare) {
+                .consume(Comma)
             }
         }
-        let close = .consume(TokenType::CloseSquare)
-        let node = AST::new(ASTType::ArrayLiteral, start.span.join(close.span))
+        let close = .consume(CloseSquare)
+        let node = AST::new(ArrayLiteral, start.span.join(close.span))
         node.u.array_literal.elements = elements
         return node
     }
-    return .parse_expression(TokenType::Newline)
+    return .parse_expression(Newline)
 }
 
 def Parser::parse_var_declaration(&this): &AST {
-    let start = .consume(TokenType::Let)
-    let name = .consume(TokenType::Identifier)
+    let start = .consume(Let)
+    let name = .consume(Identifier)
     let end_span = name.span
 
     let init = null as &AST
-    if .consume_if(TokenType::Equals) {
+    if .consume_if(Equals) {
         init = .parse_var_initializer()
         end_span = init.span
     }
     .consume_end_of_statement()
 
-    let node = AST::new(ASTType::VarDeclaration, start.span.join(end_span))
+    let node = AST::new(VarDeclaration, start.span.join(end_span))
 
     let var = Variable::new()
-    var.sym = Symbol::from_local_variable(name.text.data, var, name.span)
+    var.sym = Symbol::from_variable(name.text.data, var, name.span)
 
     node.u.var_decl.var = var
     node.u.var_decl.init = init
@@ -422,21 +423,21 @@ def Parser::parse_var_declaration(&this): &AST {
 
 def Parser::parse_global_value(&this, is_const: bool): &AST {
     let start_token = if is_const {
-        yield .consume(TokenType::Const)
+        yield .consume(Const)
     } else {
-        yield .consume(TokenType::Let)
+        yield .consume(Let)
     }
 
-    let node = AST::new(ASTType::VarDeclaration, .token().span)
-    let name = if .token_is(TokenType::Identifier) {
-        yield .consume(TokenType::Identifier)
+    let node = AST::new(VarDeclaration, .token().span)
+    let name = if .token_is(Identifier) {
+        yield .consume(Identifier)
     } else {
         .error(Error::new(.token().span, "Expected identifier"))
         return node
     }
 
     let var = Variable::new()
-    var.sym = Symbol::new_with_parent(Variable, .ns, .ns.sym, name.text.data, name.span)
+    var.sym = Symbol::from_variable(name.text.data, var, name.span)
     var.sym.u.var = var
 
     if is_const {
@@ -452,81 +453,81 @@ def Parser::parse_global_value(&this, is_const: bool): &AST {
 
     node.u.var_decl.var = var
 
-    if .consume_if(TokenType::Equals) {
+    if .consume_if(Equals) {
         if is_const {
-            node.u.var_decl.init = .parse_expression(end_type: TokenType::Newline)
+            node.u.var_decl.init = .parse_expression(end_type: Newline)
         } else {
             node.u.var_decl.init = .parse_var_initializer()
         }
     }
-    .consume_newline_or(TokenType::Semicolon)
+    .consume_newline_or(Semicolon)
     return node
 }
 
 def Parser::parse_atom(&this, end_type: TokenType): &AST {
     let node = null as &AST
     match .token().type {
-        TokenType::If => node = .parse_if()
-        TokenType::Match => node = .parse_match()
-        TokenType::OpenCurly => node = .parse_block()
-        TokenType::FormatStringLiteral => node = .parse_format_string()
-        TokenType::Null => {
-            let tok = .consume(TokenType::Null)
-            node = AST::new(ASTType::Null, tok.span)
+        If => node = .parse_if()
+        Match => node = .parse_match()
+        OpenCurly => node = .parse_block()
+        FormatStringLiteral => node = .parse_format_string()
+        Null => {
+            let tok = .consume(Null)
+            node = AST::new(Null, tok.span)
         }
-        TokenType::IntLiteral => {
-            node = AST::new(ASTType::IntLiteral, .token().span)
-            let tok = .consume(TokenType::IntLiteral)
+        IntLiteral => {
+            node = AST::new(IntLiteral, .token().span)
+            let tok = .consume(IntLiteral)
             node.u.num_literal = NumLiteral(
                 text: tok.text.data
             )
         }
-        TokenType::FloatLiteral => {
-            node = AST::new(ASTType::FloatLiteral, .token().span)
-            let tok = .consume(TokenType::FloatLiteral)
+        FloatLiteral => {
+            node = AST::new(FloatLiteral, .token().span)
+            let tok = .consume(FloatLiteral)
             node.u.num_literal = NumLiteral(
                 text: tok.text.data
             )
         }
-        TokenType::StringLiteral => {
-            node = AST::new(ASTType::StringLiteral, .token().span)
-            let tok = .consume(TokenType::StringLiteral)
+        StringLiteral => {
+            node = AST::new(StringLiteral, .token().span)
+            let tok = .consume(StringLiteral)
             node.u.string_literal = tok.text.data
         }
-        TokenType::CharLiteral => {
-            node = AST::new(ASTType::CharLiteral, .token().span)
-            let tok = .consume(TokenType::CharLiteral)
+        CharLiteral => {
+            node = AST::new(CharLiteral, .token().span)
+            let tok = .consume(CharLiteral)
             node.u.char_literal = tok.text.data
         }
-        TokenType::Identifier => node = .parse_scoped_identifier()
-        TokenType::True | TokenType::False => {
+        Identifier => node = .parse_scoped_identifier()
+        True | False => {
             let tok = .consume(.token().type)
-            node = AST::new(ASTType::BoolLiteral, tok.span)
-            node.u.bool_literal = tok.type == TokenType::True
+            node = AST::new(BoolLiteral, tok.span)
+            node.u.bool_literal = tok.type == True
         }
-        TokenType::OpenParen => {
-            .consume(TokenType::OpenParen)
-            node = .parse_expression(end_type: TokenType::CloseParen)
-            .consume(TokenType::CloseParen)
+        OpenParen => {
+            .consume(OpenParen)
+            node = .parse_expression(end_type: CloseParen)
+            .consume(CloseParen)
         }
-        TokenType::Dot => {
-            let tok = .consume(TokenType::Dot)
-            if not .curr_func? or not .curr_func.is_method or .curr_func.is_static {
+        Dot => {
+            let tok = .consume(Dot)
+            if not .cur_func? or not .cur_func.is_method or .cur_func.is_static {
                 .error(Error::new(tok.span, "Cannot use dot shorthand outside of a method"))
-                return AST::new(ASTType::Error, tok.span)
+                return AST::new(Error, tok.span)
             }
 
-            let lhs = AST::new(ASTType::Identifier, tok.span)
+            let lhs = AST::new(Identifier, tok.span)
             lhs.u.ident.name = "this"
 
-            node = AST::new(ASTType::Member, tok.span)
+            node = AST::new(Member, tok.span)
             node.u.member.lhs = lhs
 
-            if not .token_is(TokenType::Identifier) {
+            if not .token_is(Identifier) {
                 .error(Error::new(.token().span, "Expected identifier after `.`"))
                 node.span.end = .token().span.start
             } else {
-                let ident = .consume(TokenType::Identifier)
+                let ident = .consume(Identifier)
                 node.span = tok.span.join(ident.span)
                 node.u.member.rhs_name = ident.text.data
                 node.u.member.rhs_span = ident.span
@@ -534,7 +535,7 @@ def Parser::parse_atom(&this, end_type: TokenType): &AST {
         }
         else => {
             .unhandled_type("parse_expression")
-            node = AST::new(ASTType::Error, .token().span)
+            node = AST::new(Error, .token().span)
             .curr += 1
         }
     }
@@ -548,49 +549,49 @@ def Parser::parse_postfix(&this, end_type: TokenType): &AST {
     while running {
         if .token_is(end_type) break
         match .token().type {
-            TokenType::OpenParen => node = .parse_call(node)
-            TokenType::Dot => {
-                .consume(TokenType::Dot)
-                let member = AST::new(ASTType::Member, node.span)
+            OpenParen => node = .parse_call(node)
+            Dot => {
+                .consume(Dot)
+                let member = AST::new(Member, node.span)
                 member.u.member.lhs = node
                 node = member
 
-                if not .token_is(TokenType::Identifier) {
+                if not .token_is(Identifier) {
                     .error(Error::new(.token().span, "Expected identifier after `.`"))
                     node.span.end = .token().span.start
 
                 } else {
-                    let ident = .consume(TokenType::Identifier)
+                    let ident = .consume(Identifier)
                     node.span = node.span.join(ident.span)
                     node.u.member.rhs_name = ident.text.data
                     node.u.member.rhs_span = ident.span
                 }
             }
-            TokenType::Question => {
-                let tok = .consume(TokenType::Question)
+            Question => {
+                let tok = .consume(Question)
                 node = AST::new_unop(IsNotNull, node.span.join(tok.span), node)
             }
-            TokenType::OpenSquare => {
-                let open = .consume(TokenType::OpenSquare)
-                let index = .parse_expression(end_type: TokenType::CloseSquare)
-                let close = .consume(TokenType::CloseSquare)
+            OpenSquare => {
+                let open = .consume(OpenSquare)
+                let index = .parse_expression(end_type: CloseSquare)
+                let close = .consume(CloseSquare)
 
                 // Contructing the binop here manually to properly handle the
                 // spans of `]` being _after_ the index expression.
-                let op = AST::new(ASTType::BinaryOp, node.span.join(close.span))
+                let op = AST::new(BinaryOp, node.span.join(close.span))
                 op.u.binary.op = Index
                 op.u.binary.lhs = node
                 op.u.binary.rhs = index
                 op.u.binary.op_span = open.span
                 node = op
             }
-            TokenType::MinusMinus | TokenType::PlusPlus => {
+            MinusMinus | PlusPlus => {
                 let span = node.span.join(.token().span)
-                let op = if .token_is(TokenType::MinusMinus) {
-                    .consume(TokenType::MinusMinus)
+                let op = if .token_is(MinusMinus) {
+                    .consume(MinusMinus)
                     yield Operator::PostDecrement
                 } else {
-                    .consume(TokenType::PlusPlus)
+                    .consume(PlusPlus)
                     yield Operator::PostIncrement
                 }
                 node = AST::new_unop(op, span, node)
@@ -604,38 +605,38 @@ def Parser::parse_postfix(&this, end_type: TokenType): &AST {
 
 def Parser::parse_prefix(&this, end_type: TokenType): &AST {
     match .token().type {
-        TokenType::Ampersand => {
-            let amp = .consume(TokenType::Ampersand)
+        Ampersand => {
+            let amp = .consume(Ampersand)
             let expr = .parse_prefix(end_type)
             let node = AST::new_unop(Operator::Address, amp.span.join(expr.span), expr)
             return node
         }
-        TokenType::MinusMinus | TokenType::PlusPlus => {
+        MinusMinus | PlusPlus => {
             let start_span = .token().span
-            let op = if .token_is(TokenType::MinusMinus) {
-                .consume(TokenType::MinusMinus)
+            let op = if .token_is(MinusMinus) {
+                .consume(MinusMinus)
                 yield Operator::PreDecrement
             } else {
-                .consume(TokenType::PlusPlus)
+                .consume(PlusPlus)
                 yield Operator::PreIncrement
             }
             let expr = .parse_prefix(end_type)
             return AST::new_unop(op, start_span.join(expr.span), expr)
         }
-        TokenType::Star => {
-            let star = .consume(TokenType::Star)
+        Star => {
+            let star = .consume(Star)
             let expr = .parse_prefix(end_type)
             let node = AST::new_unop(Dereference, star.span.join(expr.span), expr)
             return node
         }
-        TokenType::Minus => {
-            let minus = .consume(TokenType::Minus)
+        Minus => {
+            let minus = .consume(Minus)
             let expr = .parse_prefix(end_type)
             let node = AST::new_unop(Negate, minus.span.join(expr.span), expr)
             return node
         }
-        TokenType::Tilde => {
-            let tok = .consume(TokenType::Tilde)
+        Tilde => {
+            let tok = .consume(Tilde)
             let expr = .parse_prefix(end_type)
             let node = AST::new_unop(BitwiseNot, tok.span.join(expr.span), expr)
             return node
@@ -647,9 +648,9 @@ def Parser::parse_prefix(&this, end_type: TokenType): &AST {
 
 def Parser::parse_term(&this, end_type: TokenType): &AST {
     let lhs = .parse_prefix(end_type)
-    while .token_is(TokenType::Star) or
-            .token_is(TokenType::Slash) or
-            .token_is(TokenType::Percent) {
+    while .token_is(Star) or
+            .token_is(Slash) or
+            .token_is(Percent) {
         if .token_is(end_type) break
         let op_tok = .consume(.token().type)
         let op = Operator::from_token(op_tok)
@@ -662,7 +663,7 @@ def Parser::parse_term(&this, end_type: TokenType): &AST {
 
 def Parser::parse_additive(&this, end_type: TokenType): &AST {
     let lhs = .parse_term(end_type)
-    while .token_is(TokenType::Plus) or .token_is(TokenType::Minus) {
+    while .token_is(Plus) or .token_is(Minus) {
         if .token_is(end_type) break
         let op_tok = .consume(.token().type)
         let op = Operator::from_token(op_tok)
@@ -677,7 +678,7 @@ def Parser::parse_shift(&this, end_type: TokenType): &AST {
     while .is_compound_operator(LeftShift) or
             .is_compound_operator(RightShift) {
 
-        let op = if .token().type == TokenType::LessThan {
+        let op = if .token().type == LessThan {
             yield Operator::LeftShift
         } else {
             yield Operator::RightShift
@@ -691,7 +692,7 @@ def Parser::parse_shift(&this, end_type: TokenType): &AST {
 
 def Parser::parse_bw_and(&this, end_type: TokenType): &AST {
     let lhs = .parse_shift(end_type)
-    while .token_is(TokenType::Ampersand) {
+    while .token_is(Ampersand) {
         if .token_is(end_type) break
         let op_tok = .consume(.token().type)
         let op = Operator::from_token(op_tok)
@@ -703,7 +704,7 @@ def Parser::parse_bw_and(&this, end_type: TokenType): &AST {
 
 def Parser::parse_bw_xor(&this, end_type: TokenType): &AST {
     let lhs = .parse_bw_and(end_type)
-    while .token_is(TokenType::Caret) {
+    while .token_is(Caret) {
         if .token_is(end_type) break
         let op_tok = .consume(.token().type)
         let op = Operator::from_token(op_tok)
@@ -715,7 +716,7 @@ def Parser::parse_bw_xor(&this, end_type: TokenType): &AST {
 
 def Parser::parse_bw_or(&this, end_type: TokenType): &AST {
     let lhs = .parse_bw_xor(end_type)
-    while .token_is(TokenType::Line) {
+    while .token_is(Line) {
         if .token_is(end_type) break
         let op_tok = .consume(.token().type)
         let op = Operator::from_token(op_tok)
@@ -730,12 +731,12 @@ def Parser::parse_relational(&this, end_type: TokenType): &AST {
     let operators = Vector<&Token>::new()
 
     operands.push(.parse_bw_or(end_type))
-    while .token_is(TokenType::LessThan) or
-            .token_is(TokenType::GreaterThan) or
-            .token_is(TokenType::LessThanEquals) or
-            .token_is(TokenType::GreaterThanEquals) or
-            .token_is(TokenType::EqualEquals) or
-            .token_is(TokenType::NotEquals) or
+    while .token_is(LessThan) or
+            .token_is(GreaterThan) or
+            .token_is(LessThanEquals) or
+            .token_is(GreaterThanEquals) or
+            .token_is(EqualEquals) or
+            .token_is(NotEquals) or
             .token_is_identifier("in") {
 
         if .token_is(end_type) break
@@ -775,8 +776,8 @@ def Parser::parse_relational(&this, end_type: TokenType): &AST {
 }
 
 def Parser::parse_logical_not(&this, end_type: TokenType): &AST {
-    if .token_is(TokenType::Not) {
-        let tok = .consume(TokenType::Not)
+    if .token_is(Not) {
+        let tok = .consume(Not)
         let expr = .parse_logical_not(end_type)
         return AST::new_unop(Not, tok.span.join(expr.span), expr)
     }
@@ -785,7 +786,7 @@ def Parser::parse_logical_not(&this, end_type: TokenType): &AST {
 
 def Parser::parse_logical_and(&this, end_type: TokenType): &AST {
     let lhs = .parse_logical_not(end_type)
-    while .token_is(TokenType::And) {
+    while .token_is(And) {
         if .token_is(end_type) break
         let op_tok = .consume(.token().type)
         let op = Operator::from_token(op_tok)
@@ -797,7 +798,7 @@ def Parser::parse_logical_and(&this, end_type: TokenType): &AST {
 
 def Parser::parse_logical_or(&this, end_type: TokenType): &AST {
     let lhs = .parse_logical_and(end_type)
-    while .token_is(TokenType::Or) {
+    while .token_is(Or) {
         if .token_is(end_type) break
         let op_tok = .consume(.token().type)
         let op = Operator::from_token(op_tok)
@@ -809,11 +810,11 @@ def Parser::parse_logical_or(&this, end_type: TokenType): &AST {
 
 def Parser::parse_expression(&this, end_type: TokenType): &AST {
     let lhs = .parse_logical_or(end_type)
-    while .token_is(TokenType::Equals) or
-            .token_is(TokenType::PlusEquals) or
-            .token_is(TokenType::MinusEquals) or
-            .token_is(TokenType::StarEquals) or
-            .token_is(TokenType::SlashEquals) or
+    while .token_is(Equals) or
+            .token_is(PlusEquals) or
+            .token_is(MinusEquals) or
+            .token_is(StarEquals) or
+            .token_is(SlashEquals) or
             .is_compound_operator(LeftShiftEquals) or
             .is_compound_operator(RightShiftEquals) {
         if .token_is(end_type) break
@@ -851,18 +852,18 @@ def Parser::parse_expression(&this, end_type: TokenType): &AST {
 
 def Parser::parse_if(&this): &AST {
     let start_span = .token().span
-    .consume(TokenType::If)
-    let cond = .parse_expression(end_type: TokenType::Newline)
-    .consume_if(TokenType::Then)
+    .consume(If)
+    let cond = .parse_expression(end_type: Newline)
+    .consume_if(Then)
     let body = .parse_statement()
 
     let end_span = body.span
     let els = null as &AST
-    if .consume_if(TokenType::Else) {
+    if .consume_if(Else) {
         els = .parse_statement()
         end_span = els.span
     }
-    let node = AST::new(ASTType::If, start_span.join(end_span))
+    let node = AST::new(If, start_span.join(end_span))
     node.u.if_stmt.cond = cond
     node.u.if_stmt.body = body
     node.u.if_stmt.els = els
@@ -888,19 +889,19 @@ def Parser::parse_if(&this): &AST {
 def Parser::parse_for_each(&this, start_span: Span): &AST {
 
     let name = .consume(Identifier)
-    if not (.token_is(TokenType::Colon) or .token_is_identifier("in")) {
+    if not (.token_is(Colon) or .token_is_identifier("in")) {
         .error(Error::new(.token().span, "Expected `:` of `in` after for-each loop variable"))
-        return AST::new(ASTType::Error, start_span)
+        return AST::new(Error, start_span)
     }
     .consume(.token().type)
 
-    let expr = .parse_expression(end_type: TokenType::Newline)
+    let expr = .parse_expression(end_type: Newline)
     let iter_var_name = "__iter"
 
     let init = {
-        let node = AST::new(ASTType::VarDeclaration, start_span)
+        let node = AST::new(VarDeclaration, start_span)
         let var = Variable::new()
-        var.sym = Symbol::from_local_variable(iter_var_name, var, start_span)
+        var.sym = Symbol::from_variable(iter_var_name, var, start_span)
 
         node.u.var_decl.var = var
         node.u.var_decl.init = expr
@@ -909,30 +910,30 @@ def Parser::parse_for_each(&this, start_span: Span): &AST {
     }
 
     let cond = {
-        let iter_name = AST::new(ASTType::Identifier, start_span)
+        let iter_name = AST::new(Identifier, start_span)
         iter_name.u.ident.name = iter_var_name
 
-        let member = AST::new(ASTType::Member,  start_span)
+        let member = AST::new(Member,  start_span)
         member.u.member.lhs = iter_name
         member.u.member.rhs_name = "has_value"
         member.u.member.rhs_span = expr.span
 
-        let node = AST::new(ASTType::Call, start_span)
+        let node = AST::new(Call, start_span)
         node.u.call.callee = member
         node.u.call.args = Vector<&Argument>::new()
         yield node
     }
 
     let step = {
-        let iter_name = AST::new(ASTType::Identifier, start_span)
+        let iter_name = AST::new(Identifier, start_span)
         iter_name.u.ident.name = iter_var_name
 
-        let member = AST::new(ASTType::Member, start_span)
+        let member = AST::new(Member, start_span)
         member.u.member.lhs = iter_name
         member.u.member.rhs_name = "next"
         member.u.member.rhs_span = expr.span
 
-        let node = AST::new(ASTType::Call, start_span)
+        let node = AST::new(Call, start_span)
         node.u.call.callee = member
         node.u.call.args = Vector<&Argument>::new()
         yield node
@@ -941,21 +942,21 @@ def Parser::parse_for_each(&this, start_span: Span): &AST {
 
     let loop_var_decl = {
         let var = Variable::new()
-        var.sym = Symbol::from_local_variable(name.text.data, var, name.span)
+        var.sym = Symbol::from_variable(name.text.data, var, name.span)
 
-        let iter_name = AST::new(ASTType::Identifier, name.span)
+        let iter_name = AST::new(Identifier, name.span)
         iter_name.u.ident.name = iter_var_name
 
-        let member = AST::new(ASTType::Member, name.span)
+        let member = AST::new(Member, name.span)
         member.u.member.lhs = iter_name
         member.u.member.rhs_name = "cur"
         member.u.member.rhs_span = expr.span
 
-        let call = AST::new(ASTType::Call, start_span)
+        let call = AST::new(Call, start_span)
         call.u.call.callee = member
         call.u.call.args = Vector<&Argument>::new()
 
-        let node = AST::new(ASTType::VarDeclaration, start_span)
+        let node = AST::new(VarDeclaration, start_span)
         node.u.var_decl.var = var
         node.u.var_decl.init = call
 
@@ -968,10 +969,10 @@ def Parser::parse_for_each(&this, start_span: Span): &AST {
     statements.push(loop_var_decl)
     statements.push(inner_body)
 
-    let body = AST::new(ASTType::Block, inner_body.span)
+    let body = AST::new(Block, inner_body.span)
     body.u.block.statements = statements
 
-    let node = AST::new(ASTType::For, start_span.join(body.span))
+    let node = AST::new(For, start_span.join(body.span))
     node.u.loop.init = init
     node.u.loop.cond = cond
     node.u.loop.step = step
@@ -980,27 +981,27 @@ def Parser::parse_for_each(&this, start_span: Span): &AST {
 }
 
 def Parser::parse_for(&this): &AST {
-    let tok = .consume(TokenType::For)
+    let tok = .consume(For)
 
     if .token_is(Identifier) and (
-        .peek(1).type == TokenType::Colon or
+        .peek(1).type == Colon or
         .peek(1).is_identifier("in")
     ) {
         return .parse_for_each(start_span: tok.span)
     }
 
     let init = null as &AST
-    if .token_is(TokenType::Let) {
+    if .token_is(Let) {
         init = .parse_statement()
     } else {
-        init = .parse_expression(end_type: TokenType::Semicolon)
-        .consume(TokenType::Semicolon)
+        init = .parse_expression(end_type: Semicolon)
+        .consume(Semicolon)
     }
-    let cond = .parse_expression(end_type: TokenType::Semicolon)
-    .consume(TokenType::Semicolon)
-    let step = .parse_expression(end_type: TokenType::OpenCurly)
+    let cond = .parse_expression(end_type: Semicolon)
+    .consume(Semicolon)
+    let step = .parse_expression(end_type: OpenCurly)
     let body = .parse_block()
-    let node = AST::new(ASTType::For, tok.span.join(body.span))
+    let node = AST::new(For, tok.span.join(body.span))
     node.u.loop.init = init
     node.u.loop.cond = cond
     node.u.loop.step = step
@@ -1013,77 +1014,77 @@ def Parser::parse_statement(&this): &AST {
     let start_span = .token().span
 
     match .token().type {
-        TokenType::OpenCurly => node = .parse_block()
-        TokenType::Return => {
-            .consume(TokenType::Return)
+        OpenCurly => node = .parse_block()
+        Return => {
+            .consume(Return)
             let expr = null as &AST
             if not .is_end_of_statement() {
-                expr = .parse_expression(end_type: TokenType::Newline)
+                expr = .parse_expression(end_type: Newline)
             }
-            node = AST::new(ASTType::Return, start_span.join(.token().span))
+            node = AST::new(Return, start_span.join(.token().span))
             node.u.child = expr
             .consume_end_of_statement()
         }
-        TokenType::Yield => {
-            .consume(TokenType::Yield)
-            let expr = .parse_expression(end_type: TokenType::Newline)
-            node = AST::new(ASTType::Yield, start_span.join(.token().span))
+        Yield => {
+            .consume(Yield)
+            let expr = .parse_expression(end_type: Newline)
+            node = AST::new(Yield, start_span.join(.token().span))
             node.u.child = expr
             .consume_end_of_statement()
         }
-        TokenType::Break => {
-            .consume(TokenType::Break)
-            node = AST::new(ASTType::Break, start_span.join(.token().span))
+        Break => {
+            .consume(Break)
+            node = AST::new(Break, start_span.join(.token().span))
             .consume_end_of_statement()
         }
-        TokenType::Continue => {
-            .consume(TokenType::Continue)
-            node = AST::new(ASTType::Continue, start_span.join(.token().span))
+        Continue => {
+            .consume(Continue)
+            node = AST::new(Continue, start_span.join(.token().span))
             .consume_end_of_statement()
         }
-        TokenType::While => {
-            let tok = .consume(TokenType::While)
-            let cond = .parse_expression(end_type: TokenType::OpenCurly)
+        While => {
+            let tok = .consume(While)
+            let cond = .parse_expression(end_type: OpenCurly)
             let body = .parse_block()
-            node = AST::new(ASTType::While, tok.span.join(body.span))
+            node = AST::new(While, tok.span.join(body.span))
             node.u.loop.cond = cond
             node.u.loop.body = body
         }
-        TokenType::Assert => {
-            let start = .consume(TokenType::Assert)
-            let expr = .parse_expression(end_type: TokenType::Newline)
+        Assert => {
+            let start = .consume(Assert)
+            let expr = .parse_expression(end_type: Newline)
 
             let msg = null as &AST
             let end_span = expr.span
 
-            if .consume_if(TokenType::Comma) {
-                msg = .parse_expression(end_type: TokenType::Newline)
+            if .consume_if(Comma) {
+                msg = .parse_expression(end_type: Newline)
                 end_span = msg.span
             }
 
-            let node = AST::new(ASTType::Assert, start.span.join(end_span))
+            let node = AST::new(Assert, start.span.join(end_span))
             node.u.assertion.expr = expr
             node.u.assertion.msg = msg
             return node
         }
-        TokenType::Defer => {
-            .consume(TokenType::Defer)
-            let expr = .parse_expression(end_type: TokenType::Newline)
-            node = AST::new(ASTType::Defer, start_span.join(.token().span))
+        Defer => {
+            .consume(Defer)
+            let expr = .parse_expression(end_type: Newline)
+            node = AST::new(Defer, start_span.join(.token().span))
             node.u.child = expr
             .consume_end_of_statement()
         }
-        TokenType::Import => {
+        Import => {
             node = .parse_import()
             .consume_end_of_statement()
         }
-        TokenType::For => node = .parse_for()
-        TokenType::Let => {
+        For => node = .parse_for()
+        Let => {
             node = .parse_var_declaration()
         }
         else => {
-            node = .parse_expression(end_type: TokenType::Newline)
-            .consume_if(TokenType::Semicolon)
+            node = .parse_expression(end_type: Newline)
+            .consume_if(Semicolon)
         }
     }
 
@@ -1091,25 +1092,25 @@ def Parser::parse_statement(&this): &AST {
 }
 
 def Parser::parse_block(&this): &AST {
-    if not .token_is(TokenType::OpenCurly) {
+    if not .token_is(OpenCurly) {
         .error(Error::new(.token().span, "Expected '{'"))
-        return AST::new(ASTType::Error, .token().span)
+        return AST::new(Error, .token().span)
     }
-    let start = .consume(TokenType::OpenCurly)
+    let start = .consume(OpenCurly)
 
     let statements = Vector<&AST>::new()
-    while not .token_is(TokenType::CloseCurly) {
+    while not .token_is(CloseCurly) {
         let statement = .parse_statement()
         if statement? statements.push(statement)
     }
 
-    if not .token_is(TokenType::CloseCurly) {
+    if not .token_is(CloseCurly) {
         .error(Error::new(.token().span, "Expected '}'"))
-        return AST::new(ASTType::Error, .token().span)
+        return AST::new(Error, .token().span)
     }
-    let end = .consume(TokenType::CloseCurly)
+    let end = .consume(CloseCurly)
 
-    let node = AST::new(ASTType::Block, start.span.join(end.span))
+    let node = AST::new(Block, start.span.join(end.span))
     node.u.block.statements = statements
     return node
 }
@@ -1128,8 +1129,8 @@ def Parser::add_doc_comment(&this, sym: &Symbol, token: &Token) {
     }
 }
 
-def Parser::parse_function(&this): &Function {
-    let start = .consume(TokenType::Def)
+def Parser::parse_function(&this): &AST {
+    let start = .consume(Def)
 
     let is_method = false
     let is_static = true
@@ -1140,9 +1141,12 @@ def Parser::parse_function(&this): &Function {
     let name_span = ident.span
 
     let func = Function::new()
+    let node = AST::new(Function, start.span.join(ident.span))
+    node.u.func = func
+
     let name = match ident.type {
-        ASTType::Identifier => ident.u.ident.name
-        ASTType::NSLookup => {
+        Identifier => ident.u.ident.name
+        NSLookup => {
             // TODO: How do we attach this to the class?
             is_method = true
             yield ident.u.lookup.rhs_name
@@ -1153,16 +1157,16 @@ def Parser::parse_function(&this): &Function {
         }
     }
 
-    func.sym = Symbol::new_with_parent(Function, .ns, .ns.sym, name, name_span)
+    func.sym = Symbol::new_with_parent(Function, .ns.sym, name, name_span)
     func.sym.u.func = func
     .add_doc_comment(func.sym, start)
 
-    .consume(TokenType::OpenParen)
+    .consume(OpenParen)
     let seen_default = false
-    while not .token_is(TokenType::CloseParen) {
+    while not .token_is(CloseParen) {
 
-        let found_amp = .consume_if(TokenType::Ampersand)
-        let var_name = .consume(TokenType::Identifier)
+        let found_amp = .consume_if(Ampersand)
+        let var_name = .consume(Identifier)
         if func.params.is_empty() and is_method {
             if var_name.text.data.eq("this") {
                 // TODO: Handle
@@ -1178,8 +1182,8 @@ def Parser::parse_function(&this): &Function {
         }
 
         let default_value = null as &AST
-        if .consume_if(TokenType::Equals) {
-            default_value = .parse_expression(end_type: TokenType::Comma)
+        if .consume_if(Equals) {
+            default_value = .parse_expression(end_type: Comma)
             seen_default = true
 
         } else if seen_default {
@@ -1187,17 +1191,17 @@ def Parser::parse_function(&this): &Function {
         }
 
         let var = Variable::new()
-        var.sym = Symbol::from_local_variable(var_name.text.data, var, var_name.span)
+        var.sym = Symbol::from_variable(var_name.text.data, var, var_name.span)
         var.default_value = default_value
         func.params.push(var)
 
         .add_doc_comment(var.sym, var_name)
 
-        if not .token_is(TokenType::CloseParen) {
-            .consume(TokenType::Comma)
+        if not .token_is(CloseParen) {
+            .consume(Comma)
         }
     }
-    let end_span = .consume(TokenType::CloseParen).span
+    let end_span = .consume(CloseParen).span
 
 
     func.is_method = is_method
@@ -1222,21 +1226,21 @@ def Parser::parse_function(&this): &Function {
         }
     }
 
-    .curr_func = func
+    .cur_func = func
 
-    if .token_is(TokenType::FatArrow) {
-        let arrow = .consume(TokenType::FatArrow)
+    if .token_is(FatArrow) {
+        let arrow = .consume(FatArrow)
 
-        if .token_is(TokenType::OpenCurly) {
+        if .token_is(OpenCurly) {
             .error(Error::new(.token().span, "Expected an expression for an arrow function"))
             return null
         }
 
-        let expr = .parse_expression(end_type: TokenType::Newline)
-        let ret = AST::new(ASTType::ArrowReturn, expr.span)
+        let expr = .parse_expression(end_type: Newline)
+        let ret = AST::new(ArrowReturn, expr.span)
         ret.u.child = expr
 
-        let body = AST::new(ASTType::Block, ret.span)
+        let body = AST::new(Block, ret.span)
 
         let statements = Vector<&AST>::new()
         statements.push(ret)
@@ -1248,9 +1252,9 @@ def Parser::parse_function(&this): &Function {
         func.body = .parse_block()
     }
 
-    .curr_func = null
+    .cur_func = null
     func.span = start.span.join(func.body.span)
-    return func
+    return node
 }
 
 def Parser::parse_import_path(&this): &Vector<&ImportPart> {
@@ -1265,8 +1269,8 @@ def Parser::parse_import_path(&this): &Vector<&ImportPart> {
             let part = ImportPart::new(Single, word.span)
             part.u.single.name = word.text.data
 
-            if .consume_if(TokenType::As) {
-                let alias = .consume(TokenType::Identifier)
+            if .consume_if(As) {
+                let alias = .consume(Identifier)
                 part.u.single.alias = alias.text.data
                 part.u.single.alias_span = alias.span
                 done = true
@@ -1274,25 +1278,25 @@ def Parser::parse_import_path(&this): &Vector<&ImportPart> {
 
             parts.push(part)
 
-        } else if .token_is(TokenType::Star) {
-            let tok = .consume(TokenType::Star)
+        } else if .token_is(Star) {
+            let tok = .consume(Star)
 
             let part = ImportPart::new(Wildcard, tok.span)
             parts.push(part)
             done = true
 
-        } else if .token_is(TokenType::OpenCurly) {
-            let open = .consume(TokenType::OpenCurly)
+        } else if .token_is(OpenCurly) {
+            let open = .consume(OpenCurly)
 
             let sub_paths = Vector<&Vector<&ImportPart>>::new()
-            while not .token_is(TokenType::CloseCurly) {
+            while not .token_is(CloseCurly) {
                 let sub_path = .parse_import_path()
                 if not sub_path? return null
 
                 sub_paths.push(sub_path)
-                if not .consume_if(TokenType::Comma) break
+                if not .consume_if(Comma) break
             }
-            let close = .consume(TokenType::CloseCurly)
+            let close = .consume(CloseCurly)
 
             let part = ImportPart::new(Multiple, open.span.join(close.span))
             part.u.paths = sub_paths
@@ -1305,35 +1309,35 @@ def Parser::parse_import_path(&this): &Vector<&ImportPart> {
         }
 
         if done break
-        if not .consume_if(TokenType::ColonColon) break
+        if not .consume_if(ColonColon) break
     }
     return parts
 }
 
 def Parser::parse_import(&this): &AST {
     let span = .token().span
-    .consume(TokenType::Import)
+    .consume(Import)
 
     let parent_count = 0
     let type = match .token().type {
-        TokenType::AtSign => {
-            .consume(TokenType::AtSign)
+        AtSign => {
+            .consume(AtSign)
             yield ImportType::ProjectNamespace
         }
-        TokenType::ColonColon => {
-            .consume(TokenType::ColonColon)
+        ColonColon => {
+            .consume(ColonColon)
             yield ImportType::CurrentScope
         }
-        TokenType::Dot | TokenType::Ellipsis => {
+        Dot | Ellipsis => {
             let done = false
             while not done {
                 match .token().type {
-                    TokenType::Dot => {
-                        .consume(TokenType::Dot)
+                    Dot => {
+                        .consume(Dot)
                         parent_count += 1
                     }
-                    TokenType::Ellipsis => {
-                        .consume(TokenType::Ellipsis)
+                    Ellipsis => {
+                        .consume(Ellipsis)
                         parent_count += 3
                     }
                     else => done = true
@@ -1344,11 +1348,6 @@ def Parser::parse_import(&this): &AST {
         else => ImportType::GlobalNamespace
     }
 
-    // If this is a "top-level" module, this is already at the parent directory level.
-    if .ns.is_top_level {
-        parent_count -= 1
-    }
-
     let parts = .parse_import_path()
     if not parts? return null
 
@@ -1357,7 +1356,7 @@ def Parser::parse_import(&this): &AST {
         return null
     }
 
-    let node = AST::new(ASTType::Import, span)
+    let node = AST::new(Import, span)
     node.u.import_path = Import(
         parts,
         type,
@@ -1376,7 +1375,7 @@ def Parser::parse_import(&this): &AST {
 }
 
 def Parser::parse_attribute(&this) {
-    let start = .consume(TokenType::OpenSquare)
+    let start = .consume(OpenSquare)
     if .attrs.size == 0 {
         .attrs_span = start.span
         .attrs_start_tok = start
@@ -1396,17 +1395,17 @@ def Parser::parse_attribute(&this) {
     }
     let attr = Attribute::new(attr_type, name.span)
 
-    while not .token_is(TokenType::CloseSquare) {
+    while not .token_is(CloseSquare) {
         if not .token_is(StringLiteral) {
             .error(Error::new(.token().span, "Only string literals supported in attribute arguments"))
             .curr += 1
             continue
         }
 
-        let arg = .consume(TokenType::StringLiteral)
+        let arg = .consume(StringLiteral)
         attr.args.push(arg.text.data)
     }
-    let close = .consume(TokenType::CloseSquare)
+    let close = .consume(CloseSquare)
     .attrs_span = .attrs_span.join(close.span)
 
     // We don't want to handle invalid attributes, so we just ignore them.
@@ -1424,15 +1423,13 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
         //       Clearing the statements is at the end of this loop.
         let still_parsing_attributes = false
 
-        match .token().type {
+        let stmt = match .token().type {
             OpenSquare => {
                 .parse_attribute()
                 still_parsing_attributes = true
+                yield null as &AST
             }
-            // Def => {
-            //     let func = .parse_function()
-            //     if func? then .ns.functions.push(func)
-            // }
+            Def => .parse_function()
             // Import => {
             //     let import_ = .parse_import()
             //     if import_? then .ns.imports.push(import_)   // For typechecker...
@@ -1442,8 +1439,8 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
             //         .error(Error::new(.token().span, "Attributes are not allowed on namespaces"))
             //     }
 
-            //     let start = .consume(TokenType::Namespace).span
-            //     let name = .consume(TokenType::Identifier)
+            //     let start = .consume(Namespace).span
+            //     let name = .consume(Identifier)
 
             //     let old_ns = .ns
             //     let new_ns = Namespace::new(.ns, .ns.path)
@@ -1454,9 +1451,9 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
             //     old_ns.namespaces.insert(name.text.data, new_ns)
 
             //     .ns = new_ns
-            //     .consume(TokenType::OpenCurly)
-            //     .parse_namespace_until(TokenType::CloseCurly)
-            //     let end = .consume(TokenType::CloseCurly).span
+            //     .consume(OpenCurly)
+            //     .parse_namespace_until(CloseCurly)
+            //     let end = .consume(CloseCurly).span
             //     new_ns.span = start.join(end)
 
             //     .ns = old_ns
@@ -1470,9 +1467,9 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
             //         .error(Error::new(.token().span, "Attributes are not allowed on typedefs"))
             //     }
 
-            //     let start = .consume(TokenType::TypeDef).span
-            //     let name = .consume(TokenType::Identifier)
-            //     .consume(TokenType::Equals)
+            //     let start = .consume(TypeDef).span
+            //     let name = .consume(Identifier)
+            //     .consume(Equals)
             //     let type = .parse_type()
             //     .consume_end_of_statement()
 
@@ -1493,10 +1490,11 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
             //     if con? then .ns.constants.push(con)
             // }
             // AtSign => .parse_compiler_option()
-            else => {
-                let stmt = .parse_statement()
-                if stmt? then .ns.statements.push(stmt)
-            }
+            else => .parse_statement()
+        }
+
+        if stmt? {
+            .ns.statements.push(stmt)
         }
 
         if not still_parsing_attributes {
@@ -1505,25 +1503,14 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
     }
 }
 
-def Parser::try_load_mod_for_namespace(&this, ns: &Namespace) {
-    let mod_path = f"{ns.path}/mod.oc"
-    if fs::file_exists(mod_path) and not ns.is_top_level {
-        ns.is_top_level = true
-        let parser = Parser::make(.program, ns)
-        parser.load_file(mod_path)
-    } else {
-        std::free(mod_path)
-    }
-}
-
 def Parser::load_file(&this, filename: str, contents_str: str = null) {
-    if .program.sources.contains(filename) return
+    // TODO(TIDE): Don't load the file if it's already loaded, 
+    //              This can potentially cause a loop
+    // if .sources.contains(filename) return
     let loc = Location(filename.copy(), 0, 0, 0)
     let span = Span(loc, loc)
     .ns.span = span
     .ns.sym.span = span
-
-    // println(f"Loading file: {filename} into {.ns.sym.display}")
 
     let contents: Buffer
     if not contents_str? {
@@ -1531,23 +1518,32 @@ def Parser::load_file(&this, filename: str, contents_str: str = null) {
     } else {
         contents = Buffer::from_str(contents_str)
     }
-    .program.sources.insert(filename, contents)
+
+    // TODO(TIDE): Cache the file contents later
+    // .sources.insert(filename, contents)
 
     let lexer = Lexer::make(contents.str(), filename)
     .tokens = lexer.lex()
     .curr = 0
 
-    .ns.is_a_file = true
-
     let start = .token().span
-    .parse_namespace_until(TokenType::EOF)
+    .parse_namespace_until(EOF)
     let end = .token().span
     .ns.span = start.join(end)
 }
 
-def Parser::parse_toplevel(program: &Program, filename: str, include_stdlib: bool, file_contents: str = null) {
-    if program.err_jmp_ctx.set_jump_point() > 0 return
+def Parser::parse_file(&this, filename: str, file_contents: str = null): &AST {
+    if .err_jmp_ctx.set_jump_point() > 0 return null
 
-    let parser = Parser::make(program, program.global)
-    parser.load_file(filename, file_contents)
+    let global_ns = Namespace::new()
+    let sym = Symbol::new(Namespace, "", "", Span::default())
+    sym.u.ns = global_ns
+    global_ns.sym = sym
+
+    .ns = global_ns
+    .load_file(filename, file_contents)
+
+    let ast = AST::new(Namespace, .ns.span)
+    ast.u.ns = global_ns
+    return ast
 }
