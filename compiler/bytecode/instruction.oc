@@ -1,0 +1,42 @@
+import std::vector::{ Vector }
+import std::compact_map::{ Map }
+import std::span::{ Span }
+
+import @vm::value::{ Value, String, Object }
+
+enum OpCode {
+    Null
+    True
+    False
+    Constant
+    SetGlobal
+    GetGlobal
+    Add
+    Sub
+    Mul
+    Div
+    Return
+}
+
+union InstructionData {
+    lit_idx: u16 // Index into the literals array
+}
+
+struct Instruction {
+    op: OpCode
+    u: InstructionData
+}
+
+def Instruction::make(op: OpCode): Instruction {
+    let inst: Instruction
+    inst.op = op
+    return inst
+}
+
+def Instruction::make_literal(op: OpCode, idx: u16): Instruction {
+    let inst: Instruction
+    inst.op = op
+    inst.u.lit_idx = idx
+    return inst
+}
+

@@ -1,0 +1,141 @@
+//* Contains the Program/Namespace types
+
+import std::vector::Vector
+import std::span::Span
+import std::buffer::Buffer
+import std::map::Map
+import std::libc::{ calloc, exit }
+import std::setjmp::{ ErrorContext }
+
+import @ast::nodes::{ Symbol, AST, Function, Structure, Enum }
+import @errors::Error
+import @parser::Parser
+import @lexer::Lexer
+import @errors::{ display_error_messages }
+
+struct Namespace {
+    parent: &Namespace
+
+    statements: &Vector<&AST>
+    exported_symbols: &Map<str, &Symbol>
+
+    sym: &Symbol
+    path: str
+    span: Span
+
+    // Does this namespace correspond to an actual file with source code? Or is it just an
+    // intermediate namespace for a directory?
+    is_a_file: bool
+
+    // FIXME: This is hacky, but we want to include everything in `std/prelude.oc` in the
+    //        `std` namespace, as opposed to the `std::prelude` namespace. This is done by
+    //        treating `std/prelude.oc` as "top-level", which means all it's contents are put
+    //        in the same namespace as the containing folder. All other files that are imported
+    //        from the same folder will go into a new namespace as per usual.
+    is_top_level: bool
+
+    checked_project_root: bool
+    internal_project_root: &Namespace
+}
+
+def Namespace::new(parent: &Namespace, path: str): &Namespace {
+    let ns = std::new<Namespace>()
+    ns.parent = parent
+    ns.statements = Vector<&AST>::new()
+    ns.exported_symbols = Map<str, &Symbol>::new()
+    ns.path = path
+    ns.is_a_file = false
+    return ns
+}
+
+// FIXME: There's logic here that is already in Parser, need to refactor these
+def Namespace::get_project_root(&this, span: Span, program_for_errors: &Program): &Namespace {
+    if .checked_project_root then return .internal_project_root
+    .checked_project_root = true
+
+    let cur = this
+    let root: &Namespace = null
+
+    while cur? {
+        // Short circuit if we've already found the project root
+        if cur.internal_project_root? {
+            root = cur.internal_project_root
+            break
+        }
+        if not cur.is_a_file {
+            let potential_main_path = `{cur.path}/main.oc`
+            if std::fs::file_exists(potential_main_path) {
+                if root? {
+                    program_for_errors.error(Error::new_note(
+                        span,
+                        f"Multiple project roots found: {root.path} and {cur.path}",
+                        f"Only one `main.oc` file is allowed per project, in the root."
+                    ))
+                }
+                root = cur
+            }
+            potential_main_path.free()
+        }
+        cur = cur.parent
+    }
+    .internal_project_root = root
+    if not root? {
+        program_for_errors.error(Error::new_note(
+            span, "No project root found, can't use a Project Namespace import",
+            "A project root is a top-level directory containing a `main.oc` file."
+        ))
+    }
+    return root
+}
+
+struct Program {
+    global: &Namespace
+
+    sources: &Map<str, Buffer>
+    // Lexing / Parsing errors
+    errors: &Vector<&Error>
+    error_level: u32
+
+    err_jmp_ctx: ErrorContext
+}
+
+def Program::new(): &Program {
+    let prog = std::new<Program>()
+    prog.global = Namespace::new(null, "")
+    prog.global.sym = Symbol::new(
+        Namespace,
+        ns: prog.global,
+        name: "",
+        display: "",
+        Span::default()
+    )
+    prog.global.sym.u.ns = prog.global
+    prog.error_level = 1
+    prog.errors = Vector<&Error>::new()
+    prog.sources = Map<str, Buffer>::new()
+    return prog
+}
+
+def Program::exit_with_errors_if_any(&this) {
+    if not .errors.is_empty() {
+        display_error_messages(.errors, .error_level)
+        exit(1)
+    }
+}
+
+def Program::get_source_text(&this, span: Span): str {
+    let start = span.start
+    let end = span.end
+
+    let it = .sources.get_item(start.filename)
+    if not it? return null
+
+    let contents = it.value.str()
+    let len = end.index - start.index
+    return contents.substring(start.index, len)
+}
+
+def Program::error(&this, err: &Error): &Error {
+    .errors.push(err)
+    return err
+}

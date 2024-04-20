@@ -1,0 +1,137 @@
+//! Value for the bytecode VM
+//!
+//! (Not to be confused with the {{std::value}} module, which is for representing parsed JSON values.)
+
+/// NaN-boxed value
+
+const NANISH: u64       = 0x7ffc000000000000u64
+const NAN_MASK: u64     = 0xffff000000000000u64
+const BOOL_MASK: u64    = 0x7ffe000000000002u64
+const INT_MASK: u64     = 0x7ffc000000000000u64
+const NULL_VALUE: u64   = 0x7ffe000000000000u64
+const OBJECT_MASK: u64  = 0xfffc000000000000u64
+const STRING_MASK: u64  = 0xfffe000000000000u64
+
+union ValueData {
+    flot: f64
+    uint: u64
+}
+
+struct Value {
+    u: ValueData
+}
+
+def Value::from_float(f: f64): Value {
+    let v: Value
+    v.u.flot = f
+    return v
+}
+
+def Value::from_uint(i: u64): Value {
+    let v: Value
+    v.u.uint = i
+    return v
+}
+
+def Value::is_float(this): bool => .u.uint & NANISH != NANISH
+def Value::as_float(this): f64 => .u.flot
+
+def Value::is_null(this): bool => .u.uint == NULL_VALUE
+
+def Value::is_bool(this): bool => .u.uint & BOOL_MASK == BOOL_MASK
+def Value::is_true(this): bool => .u.uint == BOOL_MASK | 3
+def Value::is_false(this): bool => .u.uint == BOOL_MASK | 2
+def Value::as_bool(this): bool => .u.uint == BOOL_MASK & 1
+
+def Value::is_int(this): bool => .u.uint & NAN_MASK == INT_MASK
+def Value::as_int(this): i32 => .u.uint as i32
+
+def Value::is_obj(this): bool => .u.uint & NAN_MASK == OBJECT_MASK
+def Value::as_obj(this): &Object => (.u.uint & 0xFFFFFFFFFFFF) as &Object
+
+def Value::is_obj_type(this, type: ObjectType): bool {
+    if not .is_obj() return false
+    return .as_obj().type == type
+}
+
+def Value::Float(f: f64): Value => Value::from_float(f)
+def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
+def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
+def Value::Null(): Value => Value::from_uint(NULL_VALUE)
+def Value::Int(i: i32): Value => Value::from_uint(i as u64 | INT_MASK)
+def Value::Object(obj: &Object): Value => Value::from_uint(obj as u64 | OBJECT_MASK)
+
+def Value::type_str(this): str {
+    if .is_float() return "float";
+    if .is_null() return "null";
+    if .is_true() return "true";
+    if .is_false() return "false";
+    if .is_int() return "int";
+    if .is_obj() {
+        let obj = .as_obj()
+        match obj.type {
+            String => return "string"
+        }
+    }
+    return "<unknown>"
+}
+
+def Value::print(this) {
+    if .is_float() { print(`{.as_float():.1f}`); return; }
+    if .is_null() { print("null"); return; }
+    if .is_true() { print("true"); return; }
+    if .is_false() { print("false"); return; }
+    if .is_int() { print(`int: {.as_int()}`); return; }
+    if .is_obj() {
+        let obj = .as_obj()
+        match obj.type {
+            String => {
+                let s = obj as &String
+                print(`"{s.data}"`)
+            }
+        }
+        return
+    }
+    assert false, f"Unknown value type in Value::print({.u.uint}, {.u.flot})"
+}
+
+
+// Generic Heap-allocated object
+
+enum ObjectType {
+    String
+}
+
+struct Object {
+    type: ObjectType
+}
+
+//! This function takes in a pre-allocated object and initializes it.
+def Object::init(&this, type: ObjectType) {
+    .type = type
+}
+
+def new_value_obj<T>(type: ObjectType): &T {
+    let res = std::new<T>()
+    res.obj.init(type)
+    return res
+}
+
+//! An *interned* string
+struct String {
+    obj: Object
+    data: str
+    len: u32
+    shash: u32
+}
+
+def String::hash(&this): u32 => .shash
+def String::eq(&this, other: &String): bool => this == other
+
+def String::new(data: str, len: u32, shash: u32): &String {
+    let s = new_value_obj<String>(ObjectType::String)
+    s.data = data
+    s.len = len
+    s.shash = shash
+    return s
+}

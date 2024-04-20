@@ -1,0 +1,68 @@
+import std::vector::{ Vector }
+import std::compact_map::{ Map }
+import std::span::{ Span }
+
+import @vm::value::{ Value, String, Object }
+import @bytecode::instruction::{ Instruction, OpCode }
+
+struct Chunk {
+    instructions: &Vector<Instruction>
+    literals: &Vector<Value>
+
+    // Debug info for error messages
+    filename: str
+    // Line number for each instruction
+    // TODO: Run-length encoding or something
+    lines_numbers: &Vector<u32>
+}
+
+def Chunk::new(span: Span): &Chunk {
+    let chunk = std::new<Chunk>()
+    chunk.instructions = Vector<Instruction>::new()
+    chunk.literals = Vector<Value>::new()
+
+    chunk.filename = span.start.filename
+    chunk.lines_numbers = Vector<u32>::new()
+    return chunk
+}
+
+def Chunk::push(&this, inst: Instruction, span: Span) {
+    .instructions.push(inst)
+    .lines_numbers.push(span.start.line)
+}
+
+def Chunk::push_literal(&this, op: OpCode, value: Value, span: Span) {
+    let idx = .literals.size
+    assert idx < 65536, "Too many literals in a chunk"
+    .literals.push(value)
+    .push(Instruction::make_literal(op, idx as u16), span)
+}
+
+def Chunk::literal(&this, idx: u16): Value {
+    return .literals[idx as u32]
+}
+
+def Chunk::dump(&this) {
+    println(f"=== Chunk from {.filename} ({.instructions.size} insts) ===")
+    for let i = 0; i < .instructions.size; i += 1 {
+        let inst = .instructions[i]
+        let line = .lines_numbers[i]
+        print(f"{line:4d}: ")
+        match inst.op {
+            Constant => { print("Constant: "); .literals[inst.u.lit_idx as u32].print(); }
+            Add => print("Add")
+            Sub => print("Sub")
+            Mul => print("Mul")
+            Div => print("Div")
+            Return => print("Return")
+            GetGlobal | SetGlobal => {
+                let val = .literal(inst.u.lit_idx).as_obj() as &String
+                print(f"GetGlobal: {val.data}")
+            }
+            Null => print("Null")
+            True => print("True")
+            False => print("False")
+        }
+        print("\n")
+    }
+}

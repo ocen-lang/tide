@@ -1,0 +1,557 @@
+//* Contains the core AST types
+
+import std::vector::Vector
+import std::map::Map
+import std::span::{ Span, Location }
+import std::sv::{ SV }
+
+import std::libc::calloc
+import @tokens::{ TokenType, Token }
+import @ast::program::Namespace
+
+enum ASTType {
+    Assert
+    Block
+    BoolLiteral
+    Break
+    Call
+    Constant
+    Continue
+    Error
+    Identifier
+    If
+    Import
+    IntLiteral
+    Member
+    NSLookup
+    Return
+    ArrowReturn
+    Yield
+    StringLiteral
+    SizeOf
+    VarDeclaration
+    While
+    For
+    CharLiteral
+    FloatLiteral
+    FormatStringLiteral
+    Cast
+    Null
+    MethodCall
+    Match
+    Defer
+    ArrayLiteral
+
+    UnaryOp
+    BinaryOp
+}
+
+struct Variable {
+    sym: &Symbol
+    //* Only for function default arguments
+    default_value: &AST
+}
+
+def Variable::new(): &Variable {
+    let var = std::new<Variable>()
+    return var
+}
+
+struct VarDeclaration {
+    var: &Variable
+    init: &AST
+}
+
+struct Structure {
+    sym: &Symbol
+    fields: &Vector<&Variable>
+    span: Span
+}
+
+def Structure::new(): &Structure {
+    let struc = std::new<Structure>()
+    struc.fields = Vector<&Variable>::new()
+    return struc
+}
+
+def Structure::get_field(&this, name: str): &Variable {
+    for field : .fields.iter() {
+        if field.sym.name.eq(name) {
+            return field
+        }
+    }
+    return null
+}
+
+struct Enum {
+    sym: &Symbol
+    span: Span
+    fields: &Vector<&Variable>
+}
+
+def Enum::new(): &Enum {
+    let enum_ = std::new<Enum>()
+    enum_.fields = Vector<&Variable>::new()
+    return enum_
+}
+
+def Enum::get_field(&this, name: str): &Variable {
+    for field : .fields.iter() {
+        if field.sym.name.eq(name) return field
+    }
+    return null
+}
+
+//! Used for operator overloading
+enum Operator {
+    // Unary
+    Address
+    Dereference
+    Negate
+    Not
+    BitwiseNot
+    IsNotNull
+    PreIncrement
+    PreDecrement
+    PostIncrement
+    PostDecrement
+
+    // Binary
+    And
+    Assignment
+    BitwiseAnd
+    BitwiseOr
+    BitwiseXor
+    Divide
+    DivideEquals
+    Equals
+    GreaterThan
+    GreaterThanEquals
+    In
+    Index
+    LeftShift
+    LessThan
+    LessThanEquals
+    Minus
+    MinusEquals
+    Modulus
+    Multiply
+    MultiplyEquals
+    NotEquals
+    Or
+    Plus
+    PlusEquals
+    RightShift
+    LeftShiftEquals
+    RightShiftEquals
+
+    // Technically binary, but need 3 operands for overloading
+    IndexAssign
+
+    Error
+}
+
+def Operator::from_operator_overload_str(s: str): Operator => match s {
+    "+" => Plus
+    "-" => Minus
+    "*" => Multiply
+    "/" => Divide
+    "==" => Equals
+    "!=" => NotEquals
+    "[]" => Index
+    "<<" => LeftShift
+    ">>" => RightShift
+    "&" => BitwiseAnd
+    "|" => BitwiseOr
+    "+=" => PlusEquals
+    "-=" => MinusEquals
+    "*=" => MultiplyEquals
+    "/=" => DivideEquals
+    "[]=" => IndexAssign
+    "<<=" => LeftShiftEquals
+    ">>=" => RightShiftEquals
+    "%" => Modulus
+    "in" => In
+    else => Error
+}
+
+def Operator::from_token(tok: &Token): Operator => match tok.type {
+    Ampersand => BitwiseAnd
+    And => And
+    Caret => BitwiseXor
+    EqualEquals => Equals
+    Equals => Assignment
+    GreaterThan => GreaterThan
+    GreaterThanEquals => GreaterThanEquals
+    LessThan => LessThan
+    LessThanEquals => LessThanEquals
+    Line => BitwiseOr
+    Minus => Minus
+    MinusEquals => MinusEquals
+    NotEquals => NotEquals
+    Or => Or
+    Percent => Modulus
+    Plus => Plus
+    PlusEquals => PlusEquals
+    Slash => Divide
+    SlashEquals => DivideEquals
+    Star => Multiply
+    StarEquals => MultiplyEquals
+    Identifier => match tok.text {
+        "in" => In
+        else => std::panic(`Unhandled identifier in Operator::from_token: {tok.text}`)
+    }
+    else => std::panic(`Unhandled token type in Operator::from_token: {tok.type.str()}`)
+}
+
+def Operator::num_overload_params(this): u32 => match this {
+    Address | Dereference | Negate | Not | BitwiseNot | IsNotNull |
+    PreIncrement | PreDecrement | PostIncrement | PostDecrement => 1
+
+    And | Assignment | BitwiseAnd | BitwiseOr | LeftShiftEquals | Divide |
+    RightShiftEquals | BitwiseXor | DivideEquals | Equals | GreaterThan |
+    GreaterThanEquals | Index | LeftShift | LessThan | LessThanEquals |
+    Minus | MinusEquals | Modulus | Multiply | MultiplyEquals | Or | Plus |
+    NotEquals | PlusEquals | RightShift | In => 2
+
+    IndexAssign => 3
+
+    Error => 0
+}
+
+def Operator::needs_lhs_pointer_for_overload(this): bool => match this {
+    MultiplyEquals => true
+    DivideEquals => true
+    PlusEquals => true
+    MinusEquals => true
+    IndexAssign => true
+    LeftShiftEquals => true
+    RightShiftEquals => true
+    else => false
+}
+
+struct Function {
+    sym: &Symbol
+    params: &Vector<&Variable>
+    body: &AST
+    exits: bool
+    span: Span
+
+    operator_overloads: &Vector<Operator>
+
+    is_method: bool
+    is_static: bool
+}
+
+def Function::new(): &Function {
+    let func = std::new<Function>()
+    func.params = Vector<&Variable>::new()
+    return func
+}
+
+struct Block {
+    statements: &Vector<&AST>
+}
+
+struct Identifier {
+    name: str
+    var: &Variable
+    is_function: bool
+    func: &Function
+}
+
+struct Argument {
+    expr: &AST
+    label: str
+    label_span: Span
+}
+
+def Argument::new(expr: &AST, label_token: &Token = null): &Argument {
+    let arg = std::new<Argument>()
+    arg.expr = expr
+    if label_token? then arg.label = label_token.text.data
+    if label_token? then arg.label_span = label_token.span
+    return arg
+}
+
+struct FuncCall {
+    callee: &AST
+    args: &Vector<&Argument>
+    func: &Function
+
+    is_constructor: bool
+    is_function_pointer: bool
+}
+
+enum ImportPartType {
+    Single
+    Multiple
+    Wildcard
+}
+
+struct ImportPartSingle {
+    name: str
+    alias: str
+    alias_span: Span
+}
+
+union ImportPartUnion {
+    single: ImportPartSingle
+    paths: &Vector<&Vector<&ImportPart>>
+}
+
+struct ImportPart {
+    type: ImportPartType
+    u: ImportPartUnion
+    span: Span
+    resolved_symbol: &Symbol
+}
+
+def ImportPart::new(type: ImportPartType, span: Span): &ImportPart {
+    let part = std::new<ImportPart>()
+    part.type = type
+    part.span = span
+    return part
+}
+
+enum ImportType {
+    //* Import from a global / library: `import foo`
+    GlobalNamespace
+    //* Import from a project namespace: `import @foo`
+    ProjectNamespace
+    //* Import from current / parent dir: `import ..foo`
+    ParentNamespace
+    //* Import from a local namespace: `import ::foo`
+    CurrentScope
+}
+
+struct Import {
+    parts: &Vector<&ImportPart>
+
+    type: ImportType
+    // For FromParentNamespace imports, we might have something like `import ..foo`, in which
+    // case we need to know how namespace levels to go up.
+    parent_count: u32
+    export: bool
+}
+
+struct NumLiteral {
+    text: str
+    // TODO: Add `Value` type
+}
+
+struct Binary {
+    op: Operator
+    lhs: &AST
+    rhs: &AST
+    op_span: Span
+}
+
+struct Unary {
+    op: Operator
+    expr: &AST
+    op_span: Span
+}
+
+struct NSLookup {
+    lhs: &AST
+    rhs_name: str
+    rhs_span: Span
+}
+
+struct Member {
+    lhs: &AST
+    rhs_name: str
+    rhs_span: Span
+    is_pointer: bool
+}
+
+struct Assertion {
+    expr: &AST
+    msg: &AST
+}
+
+struct IfStatement {
+    cond: &AST
+    body: &AST
+    els: &AST
+}
+
+struct Loop {
+    init: &AST
+    cond: &AST
+    step: &AST
+    body: &AST
+}
+
+struct FormatString {
+    parts: &Vector<str>
+    specs: &Vector<str>
+    exprs: &Vector<&AST>
+}
+
+
+struct MatchCase {
+    cond: &AST
+    body: &AST
+    cmp_fn: &Function
+}
+
+def MatchCase::new(cond: &AST, body: &AST): &MatchCase {
+    let _case = std::new<MatchCase>()
+    _case.cond = cond
+    _case.body = body
+    return _case
+}
+
+struct Match {
+    expr: &AST
+    cases: &Vector<&MatchCase>
+    defolt: &AST
+    defolt_span: Span
+    is_custom_match: bool
+}
+
+struct ArrayLiteral {
+    elements: &Vector<&AST>
+}
+
+union ASTUnion {
+    assertion: Assertion
+    binary: Binary
+    block: Block
+    bool_literal: bool
+    call: FuncCall
+    ident: Identifier
+    if_stmt: IfStatement
+    import_path: Import
+    lookup: NSLookup
+    loop: Loop
+    member: Member
+    num_literal: NumLiteral
+    string_literal: str
+    char_literal: str
+    unary: Unary
+    var_decl: VarDeclaration
+    fmt_str: FormatString
+    match_stmt: Match
+    array_literal: ArrayLiteral
+    child: &AST
+}
+
+struct AST {
+    type: ASTType
+    span: Span
+    u: ASTUnion
+}
+
+def AST::new(type: ASTType, span: Span): &AST {
+    let ast = std::new<AST>()
+    ast.type = type
+    ast.span = span
+    return ast
+}
+
+def AST::new_unop(op: Operator, span: Span, expr: &AST): &AST {
+    let ast = AST::new(UnaryOp, span)
+    ast.u.unary.op = op
+    ast.u.unary.expr = expr
+    return ast
+}
+
+def AST::new_binop(op: Operator, lhs: &AST, rhs: &AST, op_span: Span): &AST {
+    let span = lhs.span.join(rhs.span)
+    let ast = AST::new(BinaryOp, span)
+    ast.u.binary.op = op
+    ast.u.binary.lhs = lhs
+    ast.u.binary.rhs = rhs
+    ast.u.binary.op_span = op_span
+    return ast
+}
+
+def AST::is_identifier(&this): bool => match .type {
+    Identifier => true
+    NSLookup => true
+    else => false
+}
+
+def AST::is_lvalue(&this): bool => match .type {
+    Identifier => not .u.ident.is_function
+    Member => true
+    UnaryOp => .u.unary.op == Dereference
+    BinaryOp => .u.binary.op == Index
+    // TODO: does this make sense?
+    NSLookup => false
+    else => false
+}
+
+enum SymbolType {
+    Function
+    Structure
+    Enum
+    EnumVariant
+    Namespace
+    Variable
+    Constant
+}
+
+union SymbolUnion {
+    func: &Function
+    struc: &Structure
+    enum_: &Enum
+    ns: &Namespace
+    var: &Variable
+}
+
+struct Symbol {
+    //* Name in the scope it was defined in
+    name: str
+    //* Fully qualified display name, including namespaces
+    display: str
+
+    //* Span of the declaration
+    span: Span
+    //* Namespace it was defined in
+    ns: &Namespace
+
+    //* Comment attached to the declaration
+    comment: SV
+    comment_loc: Location
+
+    type: SymbolType
+    u: SymbolUnion
+}
+
+def Symbol::new(type: SymbolType, ns: &Namespace, name: str, display: str, span: Span): &Symbol {
+    let item = std::new<Symbol>()
+    item.name = name
+    item.display = display
+    item.span = span
+    item.type = type
+    item.ns = ns
+    return item
+}
+
+def Symbol::join_display(a: str, b: str): str => if a.len() == 0 then b else `{a}::{b}`
+def Symbol::join_full_name(a: str, b: str): str => if a.len() == 0 then b else `{a}_{b}`
+
+def Symbol::new_with_parent(type: SymbolType, ns: &Namespace, parent: &Symbol, name: str, span: Span): &Symbol {
+    let display = Symbol::join_display(parent.display, name)
+    return Symbol::new(type, ns, name, display, span)
+}
+
+def Symbol::update_parent(&this, parent: &Symbol) {
+    .display = Symbol::join_display(parent.display, .name)
+}
+
+def Symbol::from_local_variable(name: str, var: &Variable, span: Span): &Symbol {
+    let item = Symbol::new(
+        SymbolType::Variable,
+        ns: null,
+        name: name,
+        display: name,
+        span: span,
+    )
+    item.u.var = var
+    return item
+}

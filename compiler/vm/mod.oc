@@ -1,0 +1,118 @@
+import std::vector::Vector
+import std::compact_map::{ Map }
+
+import @bytecode::chunk::{ Chunk }
+import @bytecode::instruction::{ Instruction, OpCode }
+import .value::{ Value, String, Object }
+import .string_pool::{ StringPool }
+
+struct VM {
+    stack: &Vector<Value>
+    globals: &Map<&String, Value>
+    string_pool: StringPool
+}
+
+def VM::make(): VM {
+    return VM(
+        stack: Vector<Value>::new(),
+        globals: Map<&String, Value>::new(),
+        string_pool: StringPool::make()
+    )
+}
+
+def VM::free(&this) {
+    .stack.free()
+    .globals.free()
+    .string_pool.free()
+    // FIXME: free all objects
+}
+
+def VM::take_string(&this, data: str, len: u32): Value {
+    let str = .string_pool.take_string(data, len)
+    return Value::Object(&str.obj)
+}
+
+def VM::add(&this, a: Value, b: Value): Value {
+    if a.is_float() and b.is_float() return Value::Float(a.as_float() + b.as_float())
+    if a.is_float() and b.is_int() return Value::Float(a.as_float() + b.as_int() as f64)
+    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 + b.as_float())
+    if a.is_int() and b.is_int() return Value::Int(a.as_int() + b.as_int())
+    if a.is_obj_type(String) and b.is_obj_type(String) {
+        let a_str = a.as_obj() as &String
+        let b_str = b.as_obj() as &String
+        let new_str = `{a_str.data}{b_str.data}`
+       return .take_string(new_str, a_str.len + b_str.len)
+    }
+    assert false, f"Cant add {a.type_str()} and {b.type_str()}"
+}
+
+def VM::sub(&this, a: Value, b: Value): Value {
+    if a.is_float() and b.is_float() return Value::Float(a.as_float() - b.as_float())
+    if a.is_float() and b.is_int() return Value::Float(a.as_float() - b.as_int() as f64)
+    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 - b.as_float())
+    if a.is_int() and b.is_int() return Value::Int(a.as_int() - b.as_int())
+    assert false, f"Cant sub {a.type_str()} and {b.type_str()}"
+}
+
+def VM::mul(&this, a: Value, b: Value): Value {
+    if a.is_float() and b.is_float() return Value::Float(a.as_float() * b.as_float())
+    if a.is_float() and b.is_int() return Value::Float(a.as_float() * b.as_int() as f64)
+    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 * b.as_float())
+    if a.is_int() and b.is_int() return Value::Int(a.as_int() * b.as_int())
+    assert false, f"Cant mul {a.type_str()} and {b.type_str()}"
+}
+
+def VM::div(&this, a: Value, b: Value): Value {
+    if a.is_float() and b.is_float() return Value::Float(a.as_float() / b.as_float())
+    if a.is_float() and b.is_int() return Value::Float(a.as_float() / b.as_int() as f64)
+    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 / b.as_float())
+    if a.is_int() and b.is_int() return Value::Float(a.as_int() as f64 / b.as_int() as f64)
+    assert false, f"Cant div {a.type_str()} and {b.type_str()}"
+}
+
+def VM::run(&this, chunk: &Chunk): Value {
+    // TODO: branching instructions?
+    for inst in chunk.instructions.iter() {
+        match inst.op {
+            Constant => .stack.push(chunk.literals[inst.u.lit_idx as u32])
+            Add => {
+                let b = .stack.pop()
+                let a = .stack.pop()
+                .stack.push(.add(a, b))
+            }
+            Sub => {
+                let b = .stack.pop()
+                let a = .stack.pop()
+                .stack.push(.sub(a, b))
+            }
+            Mul => {
+                let b = .stack.pop()
+                let a = .stack.pop()
+                .stack.push(.mul(a, b))
+            }
+            Div => {
+                let b = .stack.pop()
+                let a = .stack.pop()
+                .stack.push(.div(a, b))
+            }
+            Return => return .stack.pop()
+            GetGlobal => {
+                let name = chunk.literals[inst.u.lit_idx as u32].as_obj() as &String
+                let it = .globals.get_item(name)
+                if not it? {
+                    assert false, f"Global {name.data} not found"
+                }
+                .stack.push(it.value)
+            }
+            SetGlobal => {
+                let name = chunk.literals[inst.u.lit_idx as u32].as_obj() as &String
+                let value = .stack.pop()
+                .globals.insert(name, value)
+            }
+            Null => .stack.push(Value::Null())
+            True => .stack.push(Value::True())
+            False => .stack.push(Value::False())
+        }
+    }
+    return Value::Null()
+}

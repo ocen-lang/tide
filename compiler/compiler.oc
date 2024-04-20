@@ -1,0 +1,84 @@
+import std::vector::{ Vector }
+import std::span::{ Span }
+
+import @ast::nodes::{ AST }
+import @ast::program::{ Program, Namespace }
+import @bytecode::chunk::{ Chunk,  }
+import @bytecode::instruction::{ Instruction, OpCode  }
+import @vm::{ VM }
+import @vm::value::{ Value, String }
+
+struct Compiler {
+    vm: &VM
+    chunk: &Chunk
+}
+
+def Compiler::make(vm: &VM, span: Span): Compiler {
+    let chunk = Chunk::new(span)
+    return Compiler(vm, chunk)
+}
+
+def Compiler::make_str(&this, text: str): Value {
+    let s = .vm.string_pool.copy_string(text, text.len())
+    return Value::Object(&s.obj)
+}
+
+def Compiler::compile_statement(&this, stmt: &AST) {
+    match stmt.type {
+        IntLiteral => {
+            let value = Value::Int(stmt.u.num_literal.text.to_i32())
+            .chunk.push_literal(Constant, value, stmt.span)
+        }
+        FloatLiteral => {
+            let value = Value::Float(std::libc::strtod(stmt.u.num_literal.text, null))
+            .chunk.push_literal(Constant, value, stmt.span)
+        }
+        StringLiteral => {
+            let text = stmt.u.string_literal
+            .chunk.push_literal(Constant, .make_str(text), stmt.span)
+        }
+        Identifier => {
+            let name = stmt.u.ident.name
+            .chunk.push_literal(GetGlobal, .make_str(name), stmt.span)
+        }
+        BinaryOp => {
+            .compile_statement(stmt.u.binary.lhs)
+            .compile_statement(stmt.u.binary.rhs)
+            match stmt.u.binary.op {
+                Plus => .chunk.push(Instruction::make(Add), stmt.u.binary.op_span),
+                Minus => .chunk.push(Instruction::make(Sub), stmt.u.binary.op_span),
+                Multiply => .chunk.push(Instruction::make(Mul), stmt.u.binary.op_span),
+                Divide => .chunk.push(Instruction::make(Div), stmt.u.binary.op_span),
+                else => std::panic(`Unimplemented binary operator: {stmt.u.binary.op}`)
+            }
+        }
+        VarDeclaration => {
+            let name = stmt.u.var_decl.var.sym.name
+            let expr = stmt.u.var_decl.init
+            if expr? {
+                .compile_statement(expr)
+            } else {
+                .chunk.push(Instruction::make(Null), stmt.span)
+            }
+            .chunk.push_literal(SetGlobal, .make_str(name), stmt.span)
+        }
+        else => {
+            std::panic(`Unimplemented statement type: {stmt.type}`)
+        }
+    }
+}
+
+def Compiler::compile_ns(&this, ns: &Namespace) {
+    for stmt in ns.statements.iter() {
+        .compile_statement(stmt)
+    }
+    .chunk.push(Instruction::make(Return), ns.span)
+}
+
+// TODO: More complex structures than just expressions?
+def compile_program(vm: &VM, program: &Program): &Chunk {
+    let global_ns = program.global
+    let compiler = Compiler::make(vm, global_ns.span)
+    compiler.compile_ns(global_ns)
+    return compiler.chunk
+}

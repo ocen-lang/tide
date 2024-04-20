@@ -1,0 +1,213 @@
+//* Definitions for Tokens
+
+import std::span::{ Span, Location }
+import std::sv::{ SV }
+
+struct Token {
+    type: TokenType
+    span: Span
+    text: SV
+    suffix: &Token
+    seen_newline: bool
+
+    //* Comment occuring *before* this token
+    comment: SV
+    comment_loc: Location
+}
+
+def Token::new(type: TokenType, span: Span, text: SV): &Token {
+    let tok = std::new<Token>()
+    *tok = Token(
+        type,
+        span,
+        text,
+        suffix: null,
+        seen_newline: false,
+        comment: SV::from_str(""),
+        comment_loc: Location::default()
+    )
+    return tok
+}
+
+def Token::from_type(type: TokenType, span: Span): &Token => Token::new(type, span, SV::from_str(""))
+
+def Token::from_ident(text: SV, span: Span): &Token {
+    let type = TokenType::from_text(text)
+    return Token::new(type, span, text)
+}
+
+def Token::str(&this): str => `{.span.str()}: {.type.str()}`
+
+def Token::is_word(this): bool => match .type {
+    TokenType::Identifier => true
+    else => .type as u64 > TokenType::BEGIN_KEYWORDS as u64
+}
+
+def Token::is_identifier(this, name: str): bool => match .type {
+    TokenType::Identifier => .text == name
+    else => false
+}
+
+enum TokenType {
+    // Other tokens
+    AtSign
+    Ampersand
+    Backtick
+    Caret
+    CharLiteral
+    CloseCurly
+    CloseParen
+    CloseSquare
+    Colon
+    ColonColon
+    Comma
+    Dot
+    EOF
+    Ellipsis
+    Equals
+    EqualEquals
+    Exclamation
+    FatArrow
+    FloatLiteral
+    FormatStringLiteral
+    GreaterThan
+    GreaterThanEquals
+    Identifier
+    IntLiteral
+    LessThan
+    LessThanEquals
+    Line
+    Minus
+    MinusEquals
+    MinusMinus
+    NotEquals
+    OpenCurly
+    OpenParen
+    OpenSquare
+    Percent
+    Plus
+    PlusEquals
+    PlusPlus
+    Question
+    Semicolon
+    Slash
+    SlashEquals
+    Star
+    StarEquals
+    StringLiteral
+    Tilde
+
+    //* Not an actual token, just here for convenience
+    Newline
+
+    BEGIN_KEYWORDS
+
+    // Keywords
+    And
+    As
+    Assert
+    Break
+    Const
+    Continue
+    Def
+    Defer
+    Else
+    Enum
+    Extern
+    False
+    For
+    Fn
+    If
+    Let
+    Match
+    Namespace
+    Null
+    Not
+    Or
+    Return
+    SizeOf
+    Struct
+    True
+    Then
+    TypeDef
+    Union
+    Import
+    Void
+    Yield
+    While
+}
+
+def TokenType::from_text(text: SV): TokenType => match text {
+    "and" => And
+    "as" => As
+    "assert" => Assert
+    "break" => Break
+    "const" => Const
+    "continue" => Continue
+    "def" => Def
+    "defer" => Defer
+    "else" => Else
+    "enum" => Enum
+    "extern" => Extern
+    "false" => False
+    "for" => For
+    "fn" => Fn
+    "if" => If
+    "let" => Let
+    "match" => Match
+    "namespace" => Namespace
+    "not" => Not
+    "null" => Null
+    "or" => Or
+    "return" => Return
+    "sizeof" => SizeOf
+    "struct" => Struct
+    "true" => True
+    "then" => Then
+    "typedef" => TypeDef
+    "union" => Union
+    "import" => Import
+    "void" => Void
+    "yield" => Yield
+    "while" => While
+    else => Identifier
+}
+
+def TokenType::str(this): str => match this {
+    // Keywords
+    And => "and"
+    As => "as"
+    Assert => "assert"
+    Break => "break"
+    Const => "const"
+    Continue => "continue"
+    Def => "def"
+    Defer => "defer"
+    Else => "else"
+    Enum => "enum"
+    Extern => "extern"
+    False => "false"
+    For => "for"
+    Fn => "fn"
+    If => "if"
+    Let => "let"
+    Match => "match"
+    Namespace => "namespace"
+    Not => "not"
+    Null => "null"
+    Or => "or"
+    Return => "return"
+    SizeOf => "sizeof"
+    Struct => "struct"
+    True => "true"
+    Then => "then"
+    TypeDef => "typedef"
+    Union => "union"
+    Import => "import"
+    Void => "void"
+    Yield => "yield"
+    While => "while"
+
+    // Others
+    else => .dbg()
+}
