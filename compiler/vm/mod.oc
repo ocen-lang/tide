@@ -1,34 +1,100 @@
 import std::vector::Vector
 import std::compact_map::{ Map }
+import std::traits::hash::{ hash_bytes }
+import std::mem
 
 import @bytecode::chunk::{ Chunk }
 import @bytecode::instruction::{ Instruction, OpCode }
-import .value::{ Value, String, Object }
-import .string_pool::{ StringPool }
+import .value::{ Value, String, Object, ObjectType }
+
+//! Wrapper around a string that forces comparison by value, not
+//! just by a pointer (like for the interned strings we use in
+//! the rest of the language).
+struct ValueCompareString {
+    data: str
+    len: u32
+    shash: u32
+}
+
+def ValueCompareString::hash(this): u32 => .shash
+def ValueCompareString::eq(this, other: ValueCompareString): bool {
+    if .shash != other.shash return false
+    if .len != other.len return false
+    return std::libc::memcmp(.data, other.data, .len) == 0
+}
 
 struct VM {
     stack: &Vector<Value>
     globals: &Map<&String, Value>
-    string_pool: StringPool
+    strings: &Map<ValueCompareString, Value>
+
+    //! Linked list of all allocated objects
+    objects: &Object
 }
 
 def VM::make(): VM {
     return VM(
         stack: Vector<Value>::new(),
         globals: Map<&String, Value>::new(),
-        string_pool: StringPool::make()
+        strings: Map<ValueCompareString, Value>::new(),
+        objects: null
     )
 }
 
 def VM::free(&this) {
     .stack.free()
     .globals.free()
-    .string_pool.free()
+    .strings.free()
     // FIXME: free all objects
+    let cur = .objects
+    while cur? {
+        print("Freeing object:")
+        cur.print()
+        println("")
+        let next = cur.next
+        cur.free()
+        cur = next
+    }
+    println("[+] VM freed")
 }
 
-def VM::make_string(&this, data: str, len: u32): Value {
-    return Value::String(.string_pool.take_string(data, len))
+//! Allocate a new Object of type `T` and return a reference to it.
+//!
+//! Precondition: First field of `T` must be a `Object` field.
+def allocate_object<T>(vm: &VM, type: ObjectType): &T {
+    let res = mem::alloc<T>()
+    res.obj.type = type
+    res.obj.next = vm.objects
+    vm.objects = &res.obj
+    return res
+}
+
+def VM::take_string(&this, data: str, len: u32): Value {
+    let candidate = ValueCompareString(data, len, hash_bytes(data as &u8, len))
+    let item = .strings.get_item(candidate)
+    if item? {
+        data.free()
+        return item.value
+    }
+    let string = allocate_object<String>(this, ObjectType::String)
+    string.init(data, len, candidate.shash)
+    let value = Value::String(string)
+    .strings.insert(candidate, value)
+    return value
+}
+
+def VM::copy_string(&this, data: str, len: u32): Value {
+    let candidate = ValueCompareString(data, len, hash_bytes(data as &u8, len))
+    let item = .strings.get_item(candidate)
+    if item? return item.value
+
+    let string = allocate_object<String>(this, ObjectType::String)
+    let new_data = mem::alloc<char>(len)
+    std::libc::memcpy(new_data, data, len)
+    string.init(new_data, len, candidate.shash)
+    let value = Value::String(string)
+    .strings.insert(candidate, value)
+    return value
 }
 
 def VM::add(&this, a: Value, b: Value): Value => if {
@@ -39,7 +105,7 @@ def VM::add(&this, a: Value, b: Value): Value => if {
     a.is_string() and b.is_string() => {
         let a_str = a.as_string()
         let b_str = b.as_string()
-        return .make_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
+        return .take_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
     }
     else => {
         // TODO: Runtime error?

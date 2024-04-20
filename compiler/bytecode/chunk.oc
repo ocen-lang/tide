@@ -1,6 +1,7 @@
 import std::vector::{ Vector }
 import std::compact_map::{ Map }
 import std::span::{ Span }
+import std::mem
 
 import @vm::value::{ Value, String, Object }
 import @bytecode::instruction::{ Instruction, OpCode }
@@ -17,7 +18,7 @@ struct Chunk {
 }
 
 def Chunk::new(span: Span): &Chunk {
-    let chunk = std::new<Chunk>()
+    let chunk = mem::alloc<Chunk>()
     chunk.instructions = Vector<Instruction>::new()
     chunk.literals = Vector<Value>::new()
 
@@ -65,4 +66,11 @@ def Chunk::dump(&this) {
         }
         print("\n")
     }
+}
+
+def Chunk::free(&this) {
+    .instructions.free()
+    .literals.free()
+    .lines_numbers.free()
+    mem::free(this)
 }

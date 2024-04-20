@@ -1,5 +1,6 @@
 import std::vector::{ Vector }
 import std::span::{ Span }
+import std::sv::{ SV }
 
 import @ast::nodes::{ AST }
 import @bytecode::chunk::{ Chunk,  }
@@ -17,10 +18,8 @@ def Compiler::make(vm: &VM, span: Span): Compiler {
     return Compiler(vm, chunk)
 }
 
-def Compiler::make_str(&this, text: str): Value {
-    return Value::String(
-        .vm.string_pool.copy_string(text, text.len())
-    )
+def Compiler::make_str(&this, text: SV): Value {
+    return .vm.copy_string(text.data, text.len)
 }
 
 def Compiler::compile_statement(&this, stmt: &AST) {

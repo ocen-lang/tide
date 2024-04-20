@@ -2,12 +2,12 @@
 
 import std::span::{ Span, Location }
 import std::sv::{ SV }
+import std::mem
 
 struct Token {
     type: TokenType
     span: Span
     text: SV
-    suffix: &Token
     seen_newline: bool
 
     //* Comment occuring *before* this token
@@ -15,13 +15,11 @@ struct Token {
     comment_loc: Location
 }
 
-def Token::new(type: TokenType, span: Span, text: SV): &Token {
-    let tok = std::new<Token>()
-    *tok = Token(
+def Token::new(type: TokenType, span: Span, text: SV): Token {
+    let tok = Token(
         type,
         span,
         text,
-        suffix: null,
         seen_newline: false,
         comment: SV::from_str(""),
         comment_loc: Location::default()
@@ -29,14 +27,14 @@ def Token::new(type: TokenType, span: Span, text: SV): &Token {
     return tok
 }
 
-def Token::from_type(type: TokenType, span: Span): &Token => Token::new(type, span, SV::from_str(""))
+def Token::from_type(type: TokenType, span: Span): Token => Token::new(type, span, SV::from_str(""))
 
-def Token::from_ident(text: SV, span: Span): &Token {
+def Token::from_ident(text: SV, span: Span): Token {
     let type = TokenType::from_text(text)
     return Token::new(type, span, text)
 }
 
-def Token::str(&this): str => `{.span.str()}: {.type.str()}`
+// def Token::str(&this): str => `{.span.str()}: {.type.str()}`
 
 def Token::is_word(this): bool => match .type {
     TokenType::Identifier => true

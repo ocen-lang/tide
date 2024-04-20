@@ -2,6 +2,8 @@
 //!
 //! (Not to be confused with the {{std::value}} module, which is for representing parsed JSON values.)
 
+import std::mem
+
 /// NaN-boxed value
 
 const NANISH: u64       = 0x7ffc000000000000u64
@@ -86,16 +88,7 @@ def Value::print(this) {
     if .is_true() { print("true"); return; }
     if .is_false() { print("false"); return; }
     if .is_int() { print(`int: {.as_int()}`); return; }
-    if .is_obj() {
-        let obj = .as_obj()
-        match obj.type {
-            String => {
-                let s = obj as &String
-                print(`"{s.data}"`)
-            }
-        }
-        return
-    }
+    if .is_obj() { .as_obj().print(); return }
     assert false, f"Unknown value type in Value::print({.u.uint}, {.u.flot})"
 }
 
@@ -108,17 +101,27 @@ enum ObjectType {
 
 struct Object {
     type: ObjectType
+    next: &Object
 }
 
-//! This function takes in a pre-allocated object and initializes it.
-def Object::init(&this, type: ObjectType) {
-    .type = type
+def Object::free(&this) {
+    match .type {
+        String => {
+            let s = this as &String
+            s.data.free()
+        }
+    }
+
+    mem::free(this)
 }
 
-def new_value_obj<T>(type: ObjectType): &T {
-    let res = std::new<T>()
-    res.obj.init(type)
-    return res
+def Object::print(&this) {
+    match .type {
+        String => {
+            let s = this as &String
+            print(`"{s.data}"`)
+        }
+    }
 }
 
 //! An *interned* string
@@ -132,10 +135,9 @@ struct String {
 def String::hash(&this): u32 => .shash
 def String::eq(&this, other: &String): bool => this == other
 
-def String::new(data: str, len: u32, shash: u32): &String {
-    let s = new_value_obj<String>(ObjectType::String)
-    s.data = data
-    s.len = len
-    s.shash = shash
-    return s
+//! Expects `obj` to already be initialized
+def String::init(&this, data: str, len: u32, shash: u32) {
+    .data = data
+    .len = len
+    .shash = shash
 }
