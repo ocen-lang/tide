@@ -48,13 +48,13 @@ def Value::as_int(this): i32 => .u.uint as i32
 
 def Value::is_obj(this): bool => .u.uint & NAN_MASK == OBJECT_MASK
 def Value::as_obj(this): &Object => (.u.uint & 0xFFFFFFFFFFFF) as &Object
-
-def Value::as_string(this): &String => .as_obj() as &String
-
 def Value::is_obj_type(this, type: ObjectType): bool {
     if not .is_obj() return false
     return .as_obj().type == type
 }
+
+def Value::is_string(this): bool => .is_obj_type(String)
+def Value::as_string(this): &String => .as_obj() as &String
 
 def Value::Float(f: f64): Value => Value::from_float(f)
 def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)

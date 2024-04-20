@@ -31,45 +31,53 @@ def VM::make_string(&this, data: str, len: u32): Value {
     return Value::String(.string_pool.take_string(data, len))
 }
 
-def VM::add(&this, a: Value, b: Value): Value {
-    if a.is_float() and b.is_float() return Value::Float(a.as_float() + b.as_float())
-    if a.is_float() and b.is_int() return Value::Float(a.as_float() + b.as_int() as f64)
-    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 + b.as_float())
-    if a.is_int() and b.is_int() return Value::Int(a.as_int() + b.as_int())
-    if a.is_obj_type(String) and b.is_obj_type(String) {
+def VM::add(&this, a: Value, b: Value): Value => if {
+    a.is_float() and b.is_float() => Value::Float(a.as_float() + b.as_float())
+    a.is_float() and b.is_int() => Value::Float(a.as_float() + b.as_int() as f64)
+    a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 + b.as_float())
+    a.is_int() and b.is_int() => Value::Int(a.as_int() + b.as_int())
+    a.is_string() and b.is_string() => {
         let a_str = a.as_string()
         let b_str = b.as_string()
-       return .make_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
+        return .make_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
     }
-    // TODO: Runtime error?
-    assert false, f"Cant add {a.type_str()} and {b.type_str()}"
+    else => {
+        // TODO: Runtime error?
+        assert false, f"Cant add {a.type_str()} and {b.type_str()}"
+    }
 }
 
-def VM::sub(&this, a: Value, b: Value): Value {
-    if a.is_float() and b.is_float() return Value::Float(a.as_float() - b.as_float())
-    if a.is_float() and b.is_int() return Value::Float(a.as_float() - b.as_int() as f64)
-    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 - b.as_float())
-    if a.is_int() and b.is_int() return Value::Int(a.as_int() - b.as_int())
-    // TODO: Runtime error?
-    assert false, f"Cant sub {a.type_str()} and {b.type_str()}"
+def VM::sub(&this, a: Value, b: Value): Value => if {
+    a.is_float() and b.is_float() => Value::Float(a.as_float() - b.as_float())
+    a.is_float() and b.is_int() => Value::Float(a.as_float() - b.as_int() as f64)
+    a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 - b.as_float())
+    a.is_int() and b.is_int() => Value::Int(a.as_int() - b.as_int())
+    else => {
+        // TODO: Runtime error?
+        assert false, f"Cant sub {a.type_str()} and {b.type_str()}"
+    }
 }
 
-def VM::mul(&this, a: Value, b: Value): Value {
-    if a.is_float() and b.is_float() return Value::Float(a.as_float() * b.as_float())
-    if a.is_float() and b.is_int() return Value::Float(a.as_float() * b.as_int() as f64)
-    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 * b.as_float())
-    if a.is_int() and b.is_int() return Value::Int(a.as_int() * b.as_int())
-    // TODO: Runtime error?
-    assert false, f"Cant mul {a.type_str()} and {b.type_str()}"
+def VM::mul(&this, a: Value, b: Value): Value => if {
+    a.is_float() and b.is_float() => Value::Float(a.as_float() * b.as_float())
+    a.is_float() and b.is_int() => Value::Float(a.as_float() * b.as_int() as f64)
+    a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 * b.as_float())
+    a.is_int() and b.is_int() => Value::Int(a.as_int() * b.as_int())
+    else => {
+        // TODO: Runtime error?
+        assert false, f"Cant mul {a.type_str()} and {b.type_str()}"
+    }
 }
 
-def VM::div(&this, a: Value, b: Value): Value {
-    if a.is_float() and b.is_float() return Value::Float(a.as_float() / b.as_float())
-    if a.is_float() and b.is_int() return Value::Float(a.as_float() / b.as_int() as f64)
-    if a.is_int() and b.is_float() return Value::Float(a.as_int() as f64 / b.as_float())
-    if a.is_int() and b.is_int() return Value::Float(a.as_int() as f64 / b.as_int() as f64)
-    // TODO: Runtime error?
-    assert false, f"Cant div {a.type_str()} and {b.type_str()}"
+def VM::div(&this, a: Value, b: Value): Value => if {
+    a.is_float() and b.is_float() => Value::Float(a.as_float() / b.as_float())
+    a.is_float() and b.is_int() => Value::Float(a.as_float() / b.as_int() as f64)
+    a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 / b.as_float())
+    a.is_int() and b.is_int() => Value::Int(a.as_int() / b.as_int())
+    else => {
+        // TODO: Runtime error?
+        assert false, f"Cant div {a.type_str()} and {b.type_str()}"
+    }
 }
 
 def VM::run(&this, chunk: &Chunk): Value {
