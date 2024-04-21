@@ -3,7 +3,6 @@ build
 .idea
 *.dSYM
 .DS_Store
-Dockerfile
 
 test.oc
 /*.c
