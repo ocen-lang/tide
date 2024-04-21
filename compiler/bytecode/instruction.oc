@@ -10,7 +10,11 @@ enum OpCode {
     False
     Constant
     SetGlobal
+    SetLocal
     GetGlobal
+    GetLocal
+    Print
+    Pop
     Add
     Sub
     Mul

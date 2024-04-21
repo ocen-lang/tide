@@ -45,7 +45,6 @@ def VM::free(&this) {
     .stack.free()
     .globals.free()
     .strings.free()
-    // FIXME: free all objects
     let cur = .objects
     while cur? {
         print("Freeing object:")
@@ -146,6 +145,30 @@ def VM::div(&this, a: Value, b: Value): Value => if {
     }
 }
 
+//! `print()` intrinsic function
+def VM::print(&this, inst: &Instruction) {
+    let num_args = inst.u.lit_idx as u32
+    for let i = 0; i < num_args; i++ {
+        // NOTE: We want to print them in the correct order
+        let idx = .stack.size - num_args + i
+        let arg = .stack[idx]
+        if i > 0 then print(" ")
+        if {
+            arg.is_int() => print(`{arg.as_int()}`)
+            arg.is_float() => print(`{arg.as_float():f}`)
+            arg.is_bool() => print(`{arg.as_bool()}`)
+            arg.is_string() => print(`{arg.as_string().data}`)
+            arg.is_null() => print("null")
+            else => std::panic(`Unhandled value in VM::print(): {arg.u.uint:08x}`)
+        }
+    }
+    .stack.size -= num_args
+    println("")
+
+    // Push null since this behaves like a function call
+    .stack.push(Value::Null())
+}
+
 def VM::run(&this, chunk: &Chunk): Value {
     // TODO: branching instructions?
     for inst in chunk.instructions.iter() {
@@ -171,6 +194,8 @@ def VM::run(&this, chunk: &Chunk): Value {
                 let a = .stack.pop()
                 .stack.push(.div(a, b))
             }
+            Pop => .stack.pop()
+            Print => .print(&inst)
             Return => return .stack.pop()
             GetGlobal => {
                 let name = chunk.literals[inst.u.lit_idx as u32].as_obj() as &String
@@ -185,6 +210,14 @@ def VM::run(&this, chunk: &Chunk): Value {
                 let name = chunk.literals[inst.u.lit_idx as u32].as_obj() as &String
                 let value = .stack.pop()
                 .globals.insert(name, value)
+            }
+            GetLocal => {
+                let idx = inst.u.lit_idx
+                .stack.push(.stack.data[idx])
+            }
+            SetLocal => {
+                let idx = inst.u.lit_idx
+                .stack.data[idx] = .stack.back()
             }
             Null => .stack.push(Value::Null())
             True => .stack.push(Value::True())

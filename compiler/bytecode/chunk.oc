@@ -9,6 +9,7 @@ import @bytecode::instruction::{ Instruction, OpCode }
 struct Chunk {
     instructions: &Vector<Instruction>
     literals: &Vector<Value>
+    literal_map: &Map<Value, u32>
 
     // Debug info for error messages
     filename: str
@@ -21,6 +22,7 @@ def Chunk::new(span: Span): &Chunk {
     let chunk = mem::alloc<Chunk>()
     chunk.instructions = Vector<Instruction>::new()
     chunk.literals = Vector<Value>::new()
+    chunk.literal_map = Map<Value, u32>::new()
 
     chunk.filename = span.start.filename
     chunk.lines_numbers = Vector<u32>::new()
@@ -33,9 +35,15 @@ def Chunk::push(&this, inst: Instruction, span: Span) {
 }
 
 def Chunk::push_literal(&this, op: OpCode, value: Value, span: Span) {
+    let it = .literal_map.get_item(value)
+    if it? {
+        .push(Instruction::make_literal(op, it.value as u16), span)
+        return
+    }
     let idx = .literals.size
     assert idx < 65536, "Too many literals in a chunk"
     .literals.push(value)
+    .literal_map[value] = idx
     .push(Instruction::make_literal(op, idx as u16), span)
 }
 
@@ -58,11 +66,14 @@ def Chunk::dump(&this) {
             Return => print("Return")
             GetGlobal | SetGlobal => {
                 let val = .literal(inst.u.lit_idx).as_obj() as &String
-                print(f"GetGlobal: {val.data}")
+                print(f"{inst.op}: {val.data}")
             }
+            GetLocal | SetLocal => print(f"{inst.op}: {inst.u.lit_idx}")
             Null => print("Null")
+            Pop => print("Pop")
             True => print("True")
             False => print("False")
+            Print => print(f"Print {inst.u.lit_idx}")
         }
         print("\n")
     }
@@ -72,5 +83,6 @@ def Chunk::free(&this) {
     .instructions.free()
     .literals.free()
     .lines_numbers.free()
+    .literal_map.free()
     mem::free(this)
 }

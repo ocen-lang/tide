@@ -2,78 +2,191 @@ import std::vector::{ Vector }
 import std::span::{ Span }
 import std::sv::{ SV }
 
-import @ast::nodes::{ AST }
+import @ast::nodes::{ AST, Variable }
+import @errors::{ Error }
 import @bytecode::chunk::{ Chunk,  }
 import @bytecode::instruction::{ Instruction, OpCode  }
 import @vm::{ VM }
 import @vm::value::{ Value, String }
 
+struct LocalVar {
+    var: &Variable
+    depth: i32
+}
+
 struct Compiler {
     vm: &VM
     chunk: &Chunk
+    locals: &Vector<LocalVar>
+    scope_depth: u32
 }
 
 def Compiler::make(vm: &VM, span: Span): Compiler {
     let chunk = Chunk::new(span)
-    return Compiler(vm, chunk)
+    let locals = Vector<LocalVar>::new(capacity: 256)
+    return Compiler(
+        vm,
+        chunk,
+        locals,
+        scope_depth: 0,
+    )
 }
 
 def Compiler::make_str(&this, text: SV): Value {
     return .vm.copy_string(text.data, text.len)
 }
 
-def Compiler::compile_statement(&this, stmt: &AST) {
-    match stmt.type {
+def Compiler::begin_scope(&this) => .scope_depth++
+def Compiler::end_scope(&this) => .scope_depth--
+
+def Compiler::find_local(&this, name: SV): i32 {
+    for let i = 0; i < .locals.size; i++ {
+        let idx = .locals.size - i - 1
+        let local = .locals[idx]
+        if local.var.sym.name == name {
+            return idx as i32
+        }
+    }
+    return -1
+}
+
+def Compiler::compile_expression(&this, node: &AST) {
+    match node.type {
         IntLiteral => {
-            let value = Value::Int(stmt.u.num_literal.text.to_i32())
-            .chunk.push_literal(Constant, value, stmt.span)
+            let value = Value::Int(node.u.num_literal.text.to_i32())
+            .chunk.push_literal(Constant, value, node.span)
         }
         FloatLiteral => {
-            let value = Value::Float(std::libc::strtod(stmt.u.num_literal.text, null))
-            .chunk.push_literal(Constant, value, stmt.span)
+            let value = Value::Float(std::libc::strtod(node.u.num_literal.text, null))
+            .chunk.push_literal(Constant, value, node.span)
         }
         StringLiteral => {
-            let text = stmt.u.string_literal
-            .chunk.push_literal(Constant, .make_str(text), stmt.span)
+            let text = node.u.string_literal
+            .chunk.push_literal(Constant, .make_str(text), node.span)
         }
         Identifier => {
-            let name = stmt.u.ident.name
-            .chunk.push_literal(GetGlobal, .make_str(name), stmt.span)
+            let name = node.u.ident.name
+            let local_idx = .find_local(name)
+            // Global Variable
+            if local_idx < 0 {
+                .chunk.push_literal(GetGlobal, .make_str(name), node.span)
+            
+            // Local Variable
+            } else {
+                let inst = Instruction::make_literal(GetLocal, local_idx as u16)
+                .chunk.push(inst, node.span)
+            }
         }
-        BinaryOp => {
-            .compile_statement(stmt.u.binary.lhs)
-            .compile_statement(stmt.u.binary.rhs)
-            match stmt.u.binary.op {
-                Plus => .chunk.push(Instruction::make(Add), stmt.u.binary.op_span),
-                Minus => .chunk.push(Instruction::make(Sub), stmt.u.binary.op_span),
-                Multiply => .chunk.push(Instruction::make(Mul), stmt.u.binary.op_span),
-                Divide => .chunk.push(Instruction::make(Div), stmt.u.binary.op_span),
-                else => std::panic(`Unimplemented binary operator: {stmt.u.binary.op}`)
+        Call => {
+            let callee = node.u.call.callee
+
+            // FIXME: Hack for printing...
+            if callee.is_identifier() and callee.u.ident.name == "print" {
+                let args = node.u.call.args
+                for arg in args.iter() {
+                    .compile_expression(arg.expr)
+                }
+                let inst = Instruction::make_literal(Print, args.size as u16)
+                .chunk.push(inst, node.span)
+                return
+            }
+
+            std::panic("Unimplemented support for Call in Compiler::compile_expression")
+        }
+        BinaryOp => match node.u.binary.op {
+            Assignment => {
+                .compile_expression(node.u.binary.rhs)
+
+                let lhs = node.u.binary.lhs
+                match lhs.type {
+                    Identifier => {
+                        let name = lhs.u.ident.name
+                        let idx = .find_local(lhs.u.ident.name)
+                        
+                        // Global variable
+                        if idx < 0 {
+                            .chunk.push_literal(SetGlobal, .make_str(name), node.span)
+
+                        // Local variable
+                        } else {
+                            let inst = Instruction::make_literal(SetLocal, idx as u16)
+                            .chunk.push(inst, node.span)
+                        }
+                    }
+                    else => {
+                        Error::new(
+                            lhs.span, f"Cannot assign to {lhs.type}"
+                        ).panic()
+                    }
+                }
+            }
+            // Generic Binary operators
+            else => {
+                .compile_expression(node.u.binary.lhs)
+                .compile_expression(node.u.binary.rhs)
+                match node.u.binary.op {
+                    Plus => .chunk.push(Instruction::make(Add), node.u.binary.op_span),
+                    Minus => .chunk.push(Instruction::make(Sub), node.u.binary.op_span),
+                    Multiply => .chunk.push(Instruction::make(Mul), node.u.binary.op_span),
+                    Divide => .chunk.push(Instruction::make(Div), node.u.binary.op_span),
+                    else => std::panic(`Unimplemented binary operator: {node.u.binary.op}`)
+                }
+            }
+        }
+        else => {
+            std::panic(`Unimplemented statement type: {node.type}`)
+        }
+    }
+}
+
+def Compiler::compile_statement(&this, node: &AST) {
+    match node.type {
+        Block => {
+            .begin_scope()
+
+            for s in node.u.block.statements.iter() {
+                .compile_statement(s)
+            }
+
+            .end_scope()
+
+            while .locals.size > 0 and .locals.back().depth as u32 > .scope_depth {
+                .chunk.push(Instruction::make(Pop), Span(node.span.end, node.span.end))
+                .locals.pop()
             }
         }
         VarDeclaration => {
-            let name = stmt.u.var_decl.var.sym.name
-            let expr = stmt.u.var_decl.init
+            let name = node.u.var_decl.var.sym.name
+            let expr = node.u.var_decl.init
             if expr? {
-                .compile_statement(expr)
+                .compile_expression(expr)
             } else {
-                .chunk.push(Instruction::make(Null), stmt.span)
+                .chunk.push(Instruction::make(Null), node.span)
             }
-            .chunk.push_literal(SetGlobal, .make_str(name), stmt.span)
+
+            // Global variable
+            if .scope_depth == 0 {
+                .chunk.push_literal(SetGlobal, .make_str(name), node.span)
+
+            // Local variable
+            } else {
+                // FIXME: Check if we're re-defining a variable in scope
+                let local_var = LocalVar(node.u.var_decl.var, .scope_depth as i32)
+                .locals.push(local_var)
+            }
         }
         else => {
-            std::panic(`Unimplemented statement type: {stmt.type}`)
+            .compile_expression(node)
+            .chunk.push(Instruction::make(Pop), node.span)
         }
     }
 }
 
 def Compiler::compile(&this, root: &AST) {
     assert root.type == Namespace, "Root node must be a namespace."
-
     for stmt in root.u.ns.statements.iter() {
         .compile_statement(stmt)
     }
-    .chunk.push(Instruction::make(Return), root.span)
 }
 
 // TODO: More complex structures than just expressions?

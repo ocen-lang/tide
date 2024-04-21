@@ -4,7 +4,6 @@
 
 import std::mem
 
-/// NaN-boxed value
 
 const NANISH: u64       = 0x7ffc000000000000u64
 const NAN_MASK: u64     = 0xffff000000000000u64
@@ -12,16 +11,19 @@ const BOOL_MASK: u64    = 0x7ffe000000000002u64
 const INT_MASK: u64     = 0x7ffc000000000000u64
 const NULL_VALUE: u64   = 0x7ffe000000000000u64
 const OBJECT_MASK: u64  = 0xfffc000000000000u64
-const STRING_MASK: u64  = 0xfffe000000000000u64
 
 union ValueData {
     flot: f64
     uint: u64
 }
 
+//! NaN-boxed value
 struct Value {
     u: ValueData
 }
+
+def Value::hash(this): u32 => .u.uint.hash()
+def Value::eq(this, other: Value): bool => .u.uint == other.u.uint
 
 def Value::from_float(f: f64): Value {
     let v: Value
@@ -67,38 +69,39 @@ def Value::Object(obj: &Object): Value => Value::from_uint(obj as u64 | OBJECT_M
 def Value::String(s: &String): Value => Value::Object(s as &Object)
 
 
-def Value::type_str(this): str {
-    if .is_float() return "float";
-    if .is_null() return "null";
-    if .is_true() return "true";
-    if .is_false() return "false";
-    if .is_int() return "int";
-    if .is_obj() {
+def Value::type_str(this): str => if {
+    .is_float() => "float"
+    .is_null() => "null"
+    .is_true() => "true"
+    .is_false() => "false"
+    .is_int() => "int"
+    .is_obj() => {
         let obj = .as_obj()
-        match obj.type {
-            String => return "string"
+        yield match obj.type {
+            String => "string"
         }
     }
-    return "<unknown>"
+    else => "<unknown>"
 }
 
-def Value::print(this) {
-    if .is_float() { print(`{.as_float():.1f}`); return; }
-    if .is_null() { print("null"); return; }
-    if .is_true() { print("true"); return; }
-    if .is_false() { print("false"); return; }
-    if .is_int() { print(`int: {.as_int()}`); return; }
-    if .is_obj() { .as_obj().print(); return }
-    assert false, f"Unknown value type in Value::print({.u.uint}, {.u.flot})"
+def Value::print(this) => if {
+    .is_float() => print(`{.as_float()}`)
+    .is_null() => print("null")
+    .is_true() => print("true")
+    .is_false() => print("false")
+    .is_int() => print(`{.as_int()}`)
+    .is_obj() => .as_obj().print()
+    else => {
+        assert false, f"Unknown value type in Value::print({.u.uint}, {.u.flot})"
+    }
 }
-
-
-// Generic Heap-allocated object
 
 enum ObjectType {
     String
 }
 
+//! Generic Heap-allocated object. Should only be
+//! instantiated through the VM, not allocated manually.
 struct Object {
     type: ObjectType
     next: &Object
@@ -111,7 +114,6 @@ def Object::free(&this) {
             s.data.free()
         }
     }
-
     mem::free(this)
 }
 
