@@ -60,6 +60,9 @@ def Value::is_obj_type(this, type: ObjectType): bool {
 def Value::is_string(this): bool => .is_obj_type(String)
 def Value::as_string(this): &String => .as_obj() as &String
 
+def Value::is_function(this): bool => .is_obj_type(Function)
+def Value::as_function(this): &Function => .as_obj() as &Function
+
 def Value::Float(f: f64): Value => Value::from_float(f)
 def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
 def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
@@ -79,6 +82,7 @@ def Value::type_str(this): str => if {
         let obj = .as_obj()
         yield match obj.type {
             String => "string"
+            Function => "function"
         }
     }
     else => "<unknown>"
@@ -98,6 +102,7 @@ def Value::print(this) => if {
 
 enum ObjectType {
     String
+    Function
 }
 
 //! Generic Heap-allocated object. Should only be
@@ -113,6 +118,11 @@ def Object::free(&this) {
             let s = this as &String
             s.data.free()
         }
+        Function => {
+            let f = this as &Function
+            f.chunk.free()
+            // NOTE: A function does not own its name
+        }
     }
     mem::free(this)
 }
@@ -122,6 +132,10 @@ def Object::print(&this) {
         String => {
             let s = this as &String
             print(`"{s.data}"`)
+        }
+        Function => {
+            let f = this as &Function
+            print(`"<function {f.name.data}>"`)
         }
     }
 }
@@ -142,4 +156,16 @@ def String::init(&this, data: str, len: u32, shash: u32) {
     .data = data
     .len = len
     .shash = shash
+}
+
+struct Function {
+    obj: Object
+    name: &String
+    chunk: &Chunk
+}
+
+//! Expects `obj` to already be initialized
+def Function::init(&this, name: &String, chunk: &Chunk) {
+    .name = name
+    .chunk = chunk
 }

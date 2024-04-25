@@ -2,15 +2,15 @@ import std::vector::{ Vector }
 import std::span::{ Span }
 import std::sv::{ SV }
 
-import @ast::nodes::{ AST, Variable }
+import @ast::nodes::{ AST, Variable, Symbol }
 import @errors::{ Error }
 import @bytecode::chunk::{ Chunk,  }
 import @bytecode::instruction::{ Instruction, OpCode  }
-import @vm::{ VM }
-import @vm::value::{ Value, String }
+import @vm::{ VM, allocate_object }
+import @vm::value::{ Value, String, Function }
 
 struct LocalVar {
-    var: &Variable
+    sym: &Symbol
     depth: i32
 }
 
@@ -43,11 +43,37 @@ def Compiler::find_local(&this, name: SV): i32 {
     for let i = 0; i < .locals.size; i++ {
         let idx = .locals.size - i - 1
         let local = .locals[idx]
-        if local.var.sym.name == name {
+        if local.sym.name == name {
             return idx as i32
         }
     }
     return -1
+}
+
+def Compiler::declare_variable(&this, sym: &Symbol) {
+    // Global variable
+    if .scope_depth == 0 {
+        .chunk.push_literal(SetGlobal, .make_str(sym.name), sym.span)
+
+    // Local variable
+    } else {
+        // FIXME: Check if we're re-defining a variable in scope
+        let local_var = LocalVar(sym, .scope_depth as i32)
+        .locals.push(local_var)
+    }
+}
+
+def Compiler::find_variable(&this, name: SV, span: Span) {
+    let local_idx = .find_local(name)
+    // Global Variable
+    if local_idx < 0 {
+        .chunk.push_literal(GetGlobal, .make_str(name), span)
+    
+    // Local Variable
+    } else {
+        let inst = Instruction::make_literal(GetLocal, local_idx as u16)
+        .chunk.push(inst, span)
+    }
 }
 
 def Compiler::compile_expression(&this, node: &AST) {
@@ -64,19 +90,7 @@ def Compiler::compile_expression(&this, node: &AST) {
             let text = node.u.string_literal
             .chunk.push_literal(Constant, .make_str(text), node.span)
         }
-        Identifier => {
-            let name = node.u.ident.name
-            let local_idx = .find_local(name)
-            // Global Variable
-            if local_idx < 0 {
-                .chunk.push_literal(GetGlobal, .make_str(name), node.span)
-            
-            // Local Variable
-            } else {
-                let inst = Instruction::make_literal(GetLocal, local_idx as u16)
-                .chunk.push(inst, node.span)
-            }
-        }
+        Identifier => .find_variable(node.u.ident.name, node.span)
         Call => {
             let callee = node.u.call.callee
 
@@ -91,7 +105,15 @@ def Compiler::compile_expression(&this, node: &AST) {
                 return
             }
 
-            std::panic("Unimplemented support for Call in Compiler::compile_expression")
+            let args = node.u.call.args
+            if args.size > 0 {
+                Error::new(
+                    node.span, "Compiler: Function calls with arguments are not yet supported."
+                ).panic()
+            }
+
+            .compile_expression(callee)
+            .chunk.push(Instruction::make(Call), node.span)
         }
         BinaryOp => match node.u.binary.op {
             Assignment => {
@@ -134,7 +156,9 @@ def Compiler::compile_expression(&this, node: &AST) {
             }
         }
         else => {
-            std::panic(`Unimplemented statement type: {node.type}`)
+            Error::new(
+                node.span, f"Unimplemented `{node.type}` in Compiler::compile_expression"
+            ).panic()
         }
     }
 }
@@ -163,17 +187,28 @@ def Compiler::compile_statement(&this, node: &AST) {
             } else {
                 .chunk.push(Instruction::make(Null), node.span)
             }
+            .declare_variable(node.u.var_decl.var.sym)
+        }
+        Function => {
+            let ast_func = node.u.func
 
-            // Global variable
-            if .scope_depth == 0 {
-                .chunk.push_literal(SetGlobal, .make_str(name), node.span)
+            let name_val = .make_str(ast_func.sym.name)
+            let func_obj = allocate_object<Function>(.vm, Function)
+            func_obj.name = name_val.as_string()
 
-            // Local variable
-            } else {
-                // FIXME: Check if we're re-defining a variable in scope
-                let local_var = LocalVar(node.u.var_decl.var, .scope_depth as i32)
-                .locals.push(local_var)
-            }
+            let chunk_compiler = Compiler::make(.vm, node.span)
+            chunk_compiler.compile_statement(ast_func.body)
+
+            // Add a placeholder return statement if none was provided
+            chunk_compiler.chunk.push_literal(Constant, Value::Null(), node.span)
+            chunk_compiler.chunk.push(Instruction::make(Return), node.span)
+
+            func_obj.chunk = chunk_compiler.chunk
+
+            let func_val = Value::Object(&func_obj.obj)
+            .chunk.push_literal(Constant, func_val, node.span)
+
+            .declare_variable(ast_func.sym)
         }
         else => {
             .compile_expression(node)
@@ -182,7 +217,7 @@ def Compiler::compile_statement(&this, node: &AST) {
     }
 }
 
-def Compiler::compile(&this, root: &AST) {
+def Compiler::compile_ns(&this, root: &AST) {
     assert root.type == Namespace, "Root node must be a namespace."
     for stmt in root.u.ns.statements.iter() {
         .compile_statement(stmt)
@@ -192,6 +227,6 @@ def Compiler::compile(&this, root: &AST) {
 // TODO: More complex structures than just expressions?
 def compile_program(vm: &VM, root: &AST): &Chunk {
     let compiler = Compiler::make(vm, root.span)
-    compiler.compile(root)
+    compiler.compile_ns(root)
     return compiler.chunk
 }

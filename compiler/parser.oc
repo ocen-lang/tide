@@ -14,7 +14,6 @@ import @ast::attributes::{ Attribute, AttributeType }
 import @errors::{ Error, display_error_messages }
 import @lexer::Lexer
 import @tokens::{ Token, TokenType }
-import @utils::directory_exists
 import @bump_alloc
 
 @compiler c_include "libgen.h"

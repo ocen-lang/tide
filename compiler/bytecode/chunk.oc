@@ -52,30 +52,27 @@ def Chunk::literal(&this, idx: u16): Value {
 }
 
 def Chunk::dump(&this) {
+    let chunks_to_dump = Vector<&Chunk>::new(capacity: 1)
+    defer chunks_to_dump.free()
+
     println(f"=== Chunk from {.filename} ({.instructions.size} insts) ===")
     for let i = 0; i < .instructions.size; i += 1 {
         let inst = .instructions[i]
         let line = .lines_numbers[i]
         print(f"{line:4d}: ")
-        match inst.op {
-            Constant => { print("Constant: "); .literals[inst.u.lit_idx as u32].print(); }
-            Add => print("Add")
-            Sub => print("Sub")
-            Mul => print("Mul")
-            Div => print("Div")
-            Return => print("Return")
-            GetGlobal | SetGlobal => {
-                let val = .literal(inst.u.lit_idx).as_obj() as &String
-                print(f"{inst.op}: {val.data}")
+        inst.print(this)
+        if inst.op == Constant {
+            let constant = .literals[inst.u.lit_idx as u32]
+            if constant.is_function() {
+                let f = constant.as_function()
+                chunks_to_dump.push(f.chunk)
             }
-            GetLocal | SetLocal => print(f"{inst.op}: {inst.u.lit_idx}")
-            Null => print("Null")
-            Pop => print("Pop")
-            True => print("True")
-            False => print("False")
-            Print => print(f"Print {inst.u.lit_idx}")
         }
         print("\n")
+    }
+
+    for chunk in chunks_to_dump.iter() {
+        chunk.dump()
     }
 }
 

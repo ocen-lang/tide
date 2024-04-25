@@ -8,6 +8,7 @@ import std::span::{ Span }
 import std::sv::{ SV }
 import std::mem
 import std::{ shift_args }
+import std::logging::{ init_logging, log }
 
 import .ast::nodes::{ * }
 import .parser::{ Parser }
@@ -28,9 +29,6 @@ def usage(code: i32, full: bool) {
     println("    -o path        Output executable (default: ./out)")
     println("    -c path        Output C code (default: {out}.c)")
     println("    --no-stdlid    Don't include the standard library")
-    println("    -e0            Minimal one-line errors")
-    println("    -e1            Error messages with source code (default)")
-    println("    -e2            Error messages with source / hints")
     println("    -s             Silent mode (no debug output)")
     println("    -n             Don't compile C code (default: false)")
     println("    --no-dce       Don't perform dead code elimination")
@@ -46,7 +44,6 @@ def usage(code: i32, full: bool) {
 let filename: str = null
 let silent: bool = false
 let debug: bool = false
-let error_level: u32 = 2
 
 def parse_args(argc: &i32, argv: &&str) {
 
@@ -56,9 +53,6 @@ def parse_args(argc: &i32, argv: &&str) {
             "--help" => usage(code: 0, true)
             "-s" => silent = true
             "-d" => debug = true
-            "-e0" => error_level = 0
-            "-e1" => error_level = 1
-            "-e2" => error_level = 2
             else => {
                 if arg[0] == '-' {
                     println("Unknown option: %s", arg)
@@ -77,6 +71,12 @@ def parse_args(argc: &i32, argv: &&str) {
         println("No file specified")
         usage(code: 1, false)
     }
+
+    if debug {
+        init_logging(Debug)
+    } else {
+        init_logging(Info)
+    }
 }
 
 def main(argc: i32, argv: &str) {
@@ -92,10 +92,12 @@ def main(argc: i32, argv: &str) {
     println(f"[+] Used {bump_alloc::cursor} bytes of memory for parsing")
     mem::reset_to_default_allocator()
 
-
     let vm = VM::make()
     let chunk = compile_program(&vm, ast)
-    chunk.dump()
+
+    if debug {
+        chunk.dump()
+    }
 
     vm.run(chunk)
 

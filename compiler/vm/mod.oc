@@ -2,9 +2,11 @@ import std::vector::Vector
 import std::compact_map::{ Map }
 import std::traits::hash::{ hash_bytes }
 import std::mem
+import std::logging::{ log }
 
 import @bytecode::chunk::{ Chunk }
 import @bytecode::instruction::{ Instruction, OpCode }
+import @main::debug
 import .value::{ Value, String, Object, ObjectType }
 
 //! Wrapper around a string that forces comparison by value, not
@@ -47,9 +49,11 @@ def VM::free(&this) {
     .strings.free()
     let cur = .objects
     while cur? {
-        print("Freeing object:")
-        cur.print()
-        println("")
+        if debug {
+            print("Freeing object:")
+            cur.print()
+            println("")
+        }
         let next = cur.next
         cur.free()
         cur = next
@@ -172,6 +176,7 @@ def VM::print(&this, inst: &Instruction) {
 def VM::run(&this, chunk: &Chunk): Value {
     // TODO: branching instructions?
     for inst in chunk.instructions.iter() {
+        log(Debug, f"[VM] Run: {inst.op}")
         match inst.op {
             Constant => .stack.push(chunk.literals[inst.u.lit_idx as u32])
             Add => {
@@ -197,6 +202,21 @@ def VM::run(&this, chunk: &Chunk): Value {
             Pop => .stack.pop()
             Print => .print(&inst)
             Return => return .stack.pop()
+            Call => {
+                let val = .stack.pop()
+                // TODO: Location?
+                if not val.is_function() {
+                    assert false, f"Value {val.type_str()} is not a function"
+                }
+
+                let func = val.as_function()
+                // TODO: Arguments...
+
+                // FIXME: Don't use recursion lol... do the control flow properly
+                //        by adjusting the IP and using the stack
+                let res = .run(func.chunk)
+                .stack.push(res)
+            }
             GetGlobal => {
                 let name = chunk.literals[inst.u.lit_idx as u32].as_obj() as &String
                 let it = .globals.get_item(name)

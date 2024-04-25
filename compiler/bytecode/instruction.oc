@@ -3,6 +3,7 @@ import std::compact_map::{ Map }
 import std::span::{ Span }
 
 import @vm::value::{ Value, String, Object }
+import @bytecode::chunk::{ Chunk }
 
 enum OpCode {
     Null
@@ -14,6 +15,7 @@ enum OpCode {
     GetGlobal
     GetLocal
     Print
+    Call
     Pop
     Add
     Sub
@@ -44,3 +46,28 @@ def Instruction::make_literal(op: OpCode, idx: u16): Instruction {
     return inst
 }
 
+def Instruction::print(&this, chunk: &Chunk) {
+    match .op {
+        Constant => { 
+            let constant = chunk.literals[.u.lit_idx as u32]
+            print("Constant: "); 
+            constant.print();
+        }
+        Add => print("Add")
+        Sub => print("Sub")
+        Mul => print("Mul")
+        Div => print("Div")
+        Return => print("Return")
+        Call => print("Call (no args)")
+        GetGlobal | SetGlobal => {
+            let val = chunk.literal(.u.lit_idx).as_obj() as &String
+            print(f"{.op}: {val.data}")
+        }
+        GetLocal | SetLocal => print(f"{.op}: {.u.lit_idx}")
+        Null => print("Null")
+        Pop => print("Pop")
+        True => print("True")
+        False => print("False")
+        Print => print(f"Print {.u.lit_idx}")
+    }
+}
