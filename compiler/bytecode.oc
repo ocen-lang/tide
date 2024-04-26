@@ -70,14 +70,20 @@ def Chunk::push_with_value(&this, op: OpCode, value: Value, span: Span) {
             yield idx
         }
     }
-    .push_with_arg(op, idx as u16, span)
+    .push_with_arg_u16(op, idx as u16, span)
 }
 
-def Chunk::push_with_arg(&this, op: OpCode, arg: u16, span: Span) {
+def Chunk::push_with_arg_u16(&this, op: OpCode, arg: u16, span: Span) {
     .push(op, span)
     .code.write_u16(arg)
     // Push line number twice to keep the same size
     .lines_numbers += span.start.line as u16
+    .lines_numbers += span.start.line as u16
+}
+
+def Chunk::push_with_arg_u8(&this, op: OpCode, arg: u8, span: Span) {
+    .push(op, span)
+    .code.write_u8(arg)
     .lines_numbers += span.start.line as u16
 }
 
@@ -137,7 +143,7 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
             println(f"Jump {arg}")
         }
         Return => println("Return")
-        Call => println("Call (no args)")
+        Call => println(f"Call {.read_u8(&off)}")
         GetGlobal | SetGlobal => {
             let val = .read_literal(&off).as_obj() as &String
             println(f"{op}: {val.data}")

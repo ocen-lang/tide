@@ -101,7 +101,7 @@ def Compiler::find_variable(&this, name: SV, span: Span) {
     
     // Local Variable
     } else {
-        .chunk.push_with_arg(GetLocal, local_idx as u16, span)
+        .chunk.push_with_arg_u16(GetLocal, local_idx as u16, span)
     }
 }
 
@@ -133,19 +133,18 @@ def Compiler::compile_expression(&this, node: &AST) {
                 for arg in args.iter() {
                     .compile_expression(arg.expr)
                 }
-                .chunk.push_with_arg(Print, args.size as u16, node.span)
+                .chunk.push_with_arg_u16(Print, args.size as u16, node.span)
                 return
             }
 
+            .compile_expression(callee)
+
             let args = node.u.call.args
-            if args.size > 0 {
-                Error::new(
-                    node.span, "Compiler: Function calls with arguments are not yet supported."
-                ).panic()
+            for arg in args.iter() {
+                .compile_expression(arg.expr)
             }
 
-            .compile_expression(callee)
-            .chunk.push(Call, node.span)
+            .chunk.push_with_arg_u8(Call, args.size as u8, node.span)
         }
         BinaryOp => match node.u.binary.op {
             Assignment => {
@@ -163,7 +162,7 @@ def Compiler::compile_expression(&this, node: &AST) {
 
                         // Local variable
                         } else {
-                            .chunk.push_with_arg(SetLocal, idx as u16, node.span)
+                            .chunk.push_with_arg_u16(SetLocal, idx as u16, node.span)
                         }
                     }
                     else => {
@@ -214,7 +213,7 @@ def Compiler::compile_expression(&this, node: &AST) {
 }
 
 def Compiler::make_jump(&this, op: OpCode, span: Span): u32 {
-    .chunk.push_with_arg(op, 0xbeef, span) // Placeholder
+    .chunk.push_with_arg_u16(op, 0xbeef, span) // Placeholder
     let patch_off = .chunk.code.size - 2
     return patch_off
 }
@@ -227,7 +226,7 @@ def Compiler::make_loop(&this, target: u32, span: Span) {
         ).panic()
     }
 
-    .chunk.push_with_arg(Loop, offset as u16, span)
+    .chunk.push_with_arg_u16(Loop, offset as u16, span)
 }
 
 def Compiler::patch_jump(&this, from: u32, span: Span) {
@@ -290,16 +289,22 @@ def Compiler::compile_statement(&this, node: &AST) {
 
             let name_val = .make_str(ast_func.sym.name)
             let func_obj = allocate_object<Function>(.vm, Function)
-            func_obj.name = name_val.as_string()
 
-            let chunk_compiler = Compiler::make(.vm, node.span)
-            chunk_compiler.compile_statement(ast_func.body)
+            let cc = Compiler::make(.vm, node.span)
+            cc.begin_scope()
+            for param in ast_func.params.iter() {
+                cc.create_variable(param.sym)
+                cc.mark_variable_initialized()
+            }
+
+            cc.compile_statement(ast_func.body)
 
             // Add a placeholder return statement if none was provided
-            chunk_compiler.chunk.push_with_value(Constant, Value::Null(), node.span)
-            chunk_compiler.chunk.push(Return, node.span)
+            cc.chunk.push_with_value(Constant, Value::Null(), node.span)
+            cc.chunk.push(Return, node.span)
+            cc.end_scope(ast_func.sym.span)
 
-            func_obj.chunk = chunk_compiler.chunk
+            func_obj.init(name_val.as_string(), cc.chunk, ast_func.params.size as u8)
 
             let func_val = Value::Object(&func_obj.obj)
             .chunk.push_with_value(Constant, func_val, node.span)

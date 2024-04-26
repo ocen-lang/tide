@@ -217,10 +217,12 @@ def VM::read_u16(&this): u16 {
     return (a as u16) << 8 | (b as u16)
 }
 
-def VM::run(&this, chunk: &Chunk) {
+def VM::run(&this, chunk: &Chunk): i32 {
+    .stack.push(Value::Null())
     .chunk = chunk
     .ip = chunk.code.data
-    .main_loop()
+    .stack_base = 1
+    return .main_loop()
 }
 
 def VM::read_literal(&this): Value => .chunk.literal(.read_u16())
@@ -241,7 +243,7 @@ def VM::push_frame(&this, chunk: &Chunk, ip: &u8, stack_base: u32) {
 
 def VM::pop_frame(&this) {
     // Discard all the stack variables...
-    .stack.size = .stack_base
+    .stack.size = .stack_base - 1
 
     let frame = .frames.pop()
     .chunk = frame.chunk
@@ -260,7 +262,7 @@ def VM::error(&this, msg: str) {
     Error::new(span, msg).panic()
 }
 
-def VM::main_loop(&this) {
+def VM::main_loop(&this): i32 {
     // TODO: branching instructions?
     while true {
         if debug {
@@ -280,7 +282,7 @@ def VM::main_loop(&this) {
         }
         let op = .read_u8() as OpCode
         match op {
-            Halt => return
+            Halt => return 0
             Constant => .stack.push(.read_literal())
             Add => {
                 let b = .stack.pop()
@@ -336,11 +338,23 @@ def VM::main_loop(&this) {
             Print => .print(.read_u16())
             Return => {
                 let value = .stack.pop()
-                .pop_frame()
-                .stack.push(value)
+
+                if .frames.is_empty() {
+                    // Global scope, return with the value
+                    if not value.is_int() {
+                        .error(f"Can only return integers from the global scope")
+                    }
+                    return value.as_int()
+
+                } else {
+                    .pop_frame()
+                    .stack.push(value)
+                }
             }
             Call => {
-                let val = .stack.pop()
+                let arity = .read_u8()
+                let val = .stack.back(arity as u32)
+
                 // TODO: Location?
                 if not val.is_function() {
                     .error(f"Can only call functions, got {val.type_str()}")
@@ -349,7 +363,7 @@ def VM::main_loop(&this) {
                 let func = val.as_function()
                 // TODO: Arguments...
 
-                .push_frame(func.chunk, func.chunk.code.data, .stack.size)
+                .push_frame(func.chunk, func.chunk.code.data, .stack.size - arity as u32)
             }
             GetGlobal => {
                 let name = .read_literal().as_string()
@@ -377,5 +391,5 @@ def VM::main_loop(&this) {
             False => .stack.push(Value::False())
         }
     }
-    // return Value::Null()
+    return 0
 }

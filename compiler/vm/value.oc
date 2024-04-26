@@ -163,10 +163,12 @@ struct Function {
     obj: Object
     name: &String
     chunk: &Chunk
+    arity: u8
 }
 
 //! Expects `obj` to already be initialized
-def Function::init(&this, name: &String, chunk: &Chunk) {
+def Function::init(&this, name: &String, chunk: &Chunk, arity: u8) {
     .name = name
     .chunk = chunk
+    .arity = arity
 }
