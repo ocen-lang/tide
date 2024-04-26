@@ -26,9 +26,19 @@ def ValueCompareString::eq(this, other: ValueCompareString): bool {
     return std::libc::memcmp(.data, other.data, .len) == 0
 }
 
-struct VM {
+struct CallFrame {
     chunk: &Chunk
     ip: &u8
+    stack_base: u32
+}
+
+struct VM {
+    frames: &Vector<CallFrame>
+    
+    // For the current frame
+    chunk: &Chunk
+    ip: &u8
+    stack_base: u32
 
     stack: &Vector<Value>
     globals: &Map<&String, Value>
@@ -40,8 +50,10 @@ struct VM {
 
 def VM::make(): VM {
     return VM(
+        frames: Vector<CallFrame>::new(),
         chunk: null,
         ip: null,
+        stack_base: 0,
         stack: Vector<Value>::new(),
         globals: Map<&String, Value>::new(),
         strings: Map<ValueCompareString, Value>::new(),
@@ -172,8 +184,11 @@ def VM::print_value(&this, val: Value) => if {
     val.is_int() => print(`{val.as_int()}`)
     val.is_float() => print(`{val.as_float():f}`)
     val.is_bool() => print(`{val.as_bool()}`)
-    val.is_string() => print(`{val.as_string().data}`)
     val.is_null() => print("null")
+    val.is_obj() => match val.as_obj().type {
+        String => print(`{val.as_string().data}`)
+        Function => print(`<function {val.as_function().name.data}>`)
+    }
     else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
 }
 
@@ -202,13 +217,34 @@ def VM::read_u16(&this): u16 {
     return (a as u16) << 8 | (b as u16)
 }
 
-def VM::interpret_chunk(&this, chunk: &Chunk) {
+def VM::run(&this, chunk: &Chunk) {
     .chunk = chunk
     .ip = chunk.code.data
-    .run()
+    .main_loop()
 }
 
 def VM::read_literal(&this): Value => .chunk.literal(.read_u16())
+
+def VM::is_falsey(&this, val: Value): bool => if {
+    val.is_null() => true
+    val.is_bool() => not val.as_bool()
+    else => false  // TODO: Custom falsey values?
+}
+
+def VM::push_frame(&this, chunk: &Chunk, ip: &u8, stack_base: u32) {
+    // Push current frame, and set up the new one
+    .frames.push(CallFrame(.chunk, .ip, .stack_base))
+    .chunk = chunk
+    .ip = ip
+    .stack_base = stack_base
+}
+
+def VM::pop_frame(&this) {
+    let frame = .frames.pop()
+    .chunk = frame.chunk
+    .ip = frame.ip
+    .stack_base = frame.stack_base
+}
 
 [exits]
 def VM::error(&this, msg: str) {
@@ -221,10 +257,9 @@ def VM::error(&this, msg: str) {
     Error::new(span, msg).panic()
 }
 
-def VM::run(&this) {
+def VM::main_loop(&this) {
     // TODO: branching instructions?
-    let end = .chunk.code.data + .chunk.code.size
-    while .ip < end {
+    while true {
         if debug {
             print("\nStack: ")
             for let i = 0; i < .stack.size; i++ {
@@ -236,13 +271,13 @@ def VM::run(&this) {
 
             let off = (.ip - .chunk.code.data) as u32
             let line = .chunk.lines_numbers[off]
-            // print(`[VM] {.chunk.start_span.start.filename}:{line}: `)
             print(`[VM] (L#{line:2d}) {off:4d}: `)
             .chunk.disassemble_inst(off)
 
         }
         let op = .read_u8() as OpCode
         match op {
+            Halt => return
             Constant => .stack.push(.read_literal())
             Add => {
                 let b = .stack.pop()
@@ -282,10 +317,7 @@ def VM::run(&this) {
             JumpIfFalse => {
                 let off = .read_u16()
                 let val = .stack.back()  // Peek only
-                if not val.is_bool() {
-                    .error(f"Expected boolean, got {val.type_str()}")
-                }
-                if not val.as_bool() {
+                if .is_falsey(val) {
                     .ip = .ip + off
                 }
             }
@@ -299,7 +331,7 @@ def VM::run(&this) {
             }
             Pop => .stack.pop()
             Print => .print(.read_u16())
-            Return => .stack.pop() // FIXME: Actually return the value
+            Return => .pop_frame()
             Call => {
                 let val = .stack.pop()
                 // TODO: Location?
@@ -310,11 +342,7 @@ def VM::run(&this) {
                 let func = val.as_function()
                 // TODO: Arguments...
 
-                // FIXME: Don't use recursion lol... do the control flow properly
-                //        by adjusting the IP and using the stack
-                // let res = .run(func.chunk)
-                // .stack.push(res)
-                .error(f"Call not implemented yet")
+                .push_frame(func.chunk, func.chunk.code.data, .stack.size)
             }
             GetGlobal => {
                 let name = .read_literal().as_string()
@@ -330,11 +358,11 @@ def VM::run(&this) {
                 .globals.insert(name, value)
             }
             GetLocal => {
-                let idx = .read_u16()
+                let idx = .read_u16() + .stack_base as u16
                 .stack.push(.stack.data[idx])
             }
             SetLocal => {
-                let idx = .read_u16()
+                let idx = .read_u16() + .stack_base as u16
                 .stack.data[idx] = .stack.back()
             }
             Null => .stack.push(Value::Null())

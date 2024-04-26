@@ -29,6 +29,7 @@ enum OpCode {
     LessThan
     GreaterThan
     Equal
+    Halt
 }
 
 struct Chunk {
@@ -119,6 +120,7 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
         Sub => println("Sub")
         Mul => println("Mul")
         Div => println("Div")
+        Halt => println("Halt")
         LessThan => println("LessThan")
         GreaterThan => println("GreaterThan")
         Equal => println("Equal")

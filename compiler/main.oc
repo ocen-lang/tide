@@ -44,6 +44,8 @@ let filename: str = null
 let silent: bool = false
 let debug: bool = false
 
+// @compiler c_flag "-O3"
+
 def parse_args(argc: &i32, argv: &&str) {
 
     while *argc > 0 {
@@ -100,7 +102,7 @@ def main(argc: i32, argv: &str) {
         log(Info, "Running VM:")
     }
 
-    vm.interpret_chunk(chunk)
+    vm.run(chunk)
 
     chunk.free()
     vm.free()

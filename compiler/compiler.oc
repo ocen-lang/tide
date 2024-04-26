@@ -36,7 +36,13 @@ def Compiler::make_str(&this, text: SV): Value {
 }
 
 def Compiler::begin_scope(&this) => .scope_depth++
-def Compiler::end_scope(&this) => .scope_depth--
+def Compiler::end_scope(&this, span: Span) {
+    .scope_depth--
+    while .locals.size > 0 and .locals.back().depth as u32 > .scope_depth {
+        .chunk.push(Pop, span)
+        .locals.pop()
+    }
+}
 
 def Compiler::find_local(&this, name: SV): i32 {
     for let i = 0; i < .locals.size; i++ {
@@ -49,10 +55,13 @@ def Compiler::find_local(&this, name: SV): i32 {
     return -1
 }
 
-def Compiler::declare_variable(&this, sym: &Symbol) {
+def Compiler::assign_to_variable(&this, sym: &Symbol, is_statement: bool) {
     // Global variable
     if .scope_depth == 0 {
         .chunk.push_with_value(SetGlobal, .make_str(sym.name), sym.span)
+        if is_statement {
+            .chunk.push(Pop, sym.span)
+        }
 
     // Local variable
     } else {
@@ -237,7 +246,7 @@ def Compiler::compile_statement(&this, node: &AST) {
                 .compile_statement(s)
             }
 
-            .end_scope()
+            .end_scope(node.span)
 
             while .locals.size > 0 and .locals.back().depth as u32 > .scope_depth {
                 .chunk.push(Pop, Span(node.span.end, node.span.end))
@@ -252,7 +261,7 @@ def Compiler::compile_statement(&this, node: &AST) {
             } else {
                 .chunk.push(Null, node.span)
             }
-            .declare_variable(node.u.var_decl.var.sym)
+            .assign_to_variable(node.u.var_decl.var.sym, is_statement: true)
         }
         Function => {
             let ast_func = node.u.func
@@ -273,7 +282,7 @@ def Compiler::compile_statement(&this, node: &AST) {
             let func_val = Value::Object(&func_obj.obj)
             .chunk.push_with_value(Constant, func_val, node.span)
 
-            .declare_variable(ast_func.sym)
+            .assign_to_variable(ast_func.sym, is_statement: false)
         }
         If => .compile_if(node, is_expression: false)
         While => {
@@ -288,6 +297,44 @@ def Compiler::compile_statement(&this, node: &AST) {
             .make_loop(start, loop.cond.span)
             .patch_jump(false_jump, loop.cond.span)
             .chunk.push(Pop, loop.cond.span)
+        }
+        For => {
+            let loop = &node.u.loop
+            .begin_scope()
+
+            if loop.init? {
+                .compile_statement(loop.init)
+            }
+
+            let start = .chunk.code.size
+            if loop.cond? {
+                .compile_expression(loop.cond)
+            } else {
+                .chunk.push_with_value(Constant, Value::True(), node.span)
+            }
+
+            let false_jump = .make_jump(JumpIfFalse, node.span)
+            .chunk.push(Pop, node.span)
+
+            .compile_statement(loop.body)
+
+            if loop.step? {
+                .compile_statement(loop.step)
+            }
+
+            .make_loop(start, node.span)
+            .patch_jump(false_jump, node.span)
+            .chunk.push(Pop, node.span)
+
+            .end_scope(node.span)
+        }
+        Return => {
+            if node.u.child? {
+                .compile_expression(node.u.child)
+            } else {
+                .chunk.push(Null, node.span)
+            }
+            .chunk.push(Return, node.span)
         }
         else => {
             .compile_expression(node)
@@ -307,5 +354,6 @@ def Compiler::compile_ns(&this, root: &AST) {
 def compile_program(vm: &VM, root: &AST): &Chunk {
     let compiler = Compiler::make(vm, root.span)
     compiler.compile_ns(root)
+    compiler.chunk.push(Halt, root.span)
     return compiler.chunk
 }

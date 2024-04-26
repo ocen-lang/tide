@@ -68,7 +68,7 @@ def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
 def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
 def Value::Bool(b: bool): Value => if b then Value::True() else Value::False()
 def Value::Null(): Value => Value::from_uint(NULL_VALUE)
-def Value::Int(i: i32): Value => Value::from_uint(i as u64 | INT_MASK)
+def Value::Int(i: i32): Value => Value::from_uint(i as u32 as u64 | INT_MASK)
 def Value::Object(obj: &Object): Value => Value::from_uint(obj as u64 | OBJECT_MASK)
 def Value::String(s: &String): Value => Value::Object(s as &Object)
 
@@ -136,7 +136,7 @@ def Object::print(&this) {
         }
         Function => {
             let f = this as &Function
-            print(`"<function {f.name.data}>"`)
+            print(`<function {f.name.data}>`)
         }
     }
 }
