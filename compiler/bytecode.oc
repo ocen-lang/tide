@@ -15,7 +15,6 @@ enum OpCode {
     SetLocal
     GetGlobal
     GetLocal
-    Print
     Call
     Pop
     Add
@@ -156,10 +155,6 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
         Pop => println("Pop")
         True => println("True")
         False => println("False")
-        Print => {
-            let arg = .read_u16(&off)
-            println(f"Print {arg}")
-        }
     }
     return off
 }

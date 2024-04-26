@@ -8,7 +8,8 @@ import std::logging::{ log }
 import @errors::{ Error }
 import @bytecode::{ Chunk, OpCode }
 import @main::debug
-import .value::{ Value, String, Object, ObjectType }
+import .value::{ Value, String, Object, ObjectType, NativeFunctionType, NativeFunction }
+import .native
 
 //! Wrapper around a string that forces comparison by value, not
 //! just by a pointer (like for the interned strings we use in
@@ -188,25 +189,9 @@ def VM::print_value(&this, val: Value) => if {
     val.is_obj() => match val.as_obj().type {
         String => print(`{val.as_string().data}`)
         Function => print(`<function {val.as_function().name.data}>`)
+        NativeFunction => print(`<native {val.as_native_function().name.data}>`)
     }
     else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
-}
-
-//! `print()` intrinsic function
-def VM::print(&this, arg: u16) {
-    let num_args = arg as u32
-    for let i = 0; i < num_args as u32; i++ {
-        // NOTE: We want to print them in the correct order
-        let idx = .stack.size - num_args + i
-        let arg = .stack[idx]
-        if i > 0 then print(" ")
-        .print_value(arg) 
-    }
-    .stack.size -= num_args
-    println("")
-
-    // Push null since this behaves like a function call
-    .stack.push(Value::Null())
 }
 
 def VM::read_u8(&this): u8 => *.ip++
@@ -217,7 +202,29 @@ def VM::read_u16(&this): u16 {
     return (a as u16) << 8 | (b as u16)
 }
 
+def VM::add_native_function(&this, name: str, func: NativeFunctionType) {
+    let s = .copy_string(name, name.len())
+    .stack.push(s)
+
+    let native_fn = allocate_object<NativeFunction>(this, NativeFunction)
+    native_fn.init(s.as_string(), func)
+    let value = Value::Object(&native_fn.obj)
+    .stack.push(value)
+
+    .globals.insert(s.as_string(), value)
+
+    // Pop the function and the name
+    .stack.pop()
+    .stack.pop()
+}
+
+def VM::setup_native_functions(&this) {
+    .add_native_function("clock", native::clock)
+    .add_native_function("print", native::print)
+}
+
 def VM::run(&this, chunk: &Chunk): i32 {
+    .setup_native_functions()
     .stack.push(Value::Null())
     .chunk = chunk
     .ip = chunk.code.data
@@ -335,7 +342,6 @@ def VM::main_loop(&this): i32 {
                 .ip = .ip - off
             }
             Pop => .stack.pop()
-            Print => .print(.read_u16())
             Return => {
                 let value = .stack.pop()
 
@@ -356,14 +362,22 @@ def VM::main_loop(&this): i32 {
                 let val = .stack.back(arity as u32)
 
                 // TODO: Location?
-                if not val.is_function() {
-                    .error(f"Can only call functions, got {val.type_str()}")
+                if {
+                    val.is_function() => {
+                        let func = val.as_function()
+                        if func.arity != arity {
+                            .error(f"Function {func.name.data} expected {func.arity} arguments, got {arity}")
+                        }
+                        .push_frame(func.chunk, func.chunk.code.data, .stack.size - arity as u32)
+                    }
+                    val.is_native_function() => {
+                        let func = val.as_native_function()
+                        let res = func.func(this, arity as u32, &.stack.data[.stack.size - arity as u32])
+                        .stack.size -= arity as u32 + 1  // Pop the arguments and the function
+                        .stack.push(res)
+                    }
+                    else => .error(f"Can only call functions, got {val.type_str()}")
                 }
-
-                let func = val.as_function()
-                // TODO: Arguments...
-
-                .push_frame(func.chunk, func.chunk.code.data, .stack.size - arity as u32)
             }
             GetGlobal => {
                 let name = .read_literal().as_string()

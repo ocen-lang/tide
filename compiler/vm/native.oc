@@ -1,0 +1,21 @@
+import @vm::value::{ Value }
+
+// FIXME: Move into ocen/std/time
+[extern "clock"] def c_clock(): u64
+[extern] const CLOCKS_PER_SEC: u64 
+
+def clock(vm: &VM, count: u32, args: &Value): Value {
+    return Value::Float(c_clock() as f64 / CLOCKS_PER_SEC as f64)
+}
+
+def print(vm: &VM, count: u32, args: &Value): Value {
+    for let i = 0; i < count; i++ {
+        let val = args[i]
+        if i > 0 {
+            print(" ")
+        }
+        vm.print_value(val)
+    }
+    print("\n")
+    return Value::Null()
+}

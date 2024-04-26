@@ -63,6 +63,9 @@ def Value::as_string(this): &String => .as_obj() as &String
 def Value::is_function(this): bool => .is_obj_type(Function)
 def Value::as_function(this): &Function => .as_obj() as &Function
 
+def Value::is_native_function(this): bool => .is_obj_type(NativeFunction)
+def Value::as_native_function(this): &NativeFunction => .as_obj() as &NativeFunction
+
 def Value::Float(f: f64): Value => Value::from_float(f)
 def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
 def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
@@ -84,6 +87,7 @@ def Value::type_str(this): str => if {
         yield match obj.type {
             String => "string"
             Function => "function"
+            NativeFunction => "<native function>"
         }
     }
     else => "<unknown>"
@@ -104,6 +108,7 @@ def Value::print(this) => if {
 enum ObjectType {
     String
     Function
+    NativeFunction
 }
 
 //! Generic Heap-allocated object. Should only be
@@ -124,6 +129,7 @@ def Object::free(&this) {
             f.chunk.free()
             // NOTE: A function does not own its name
         }
+        NativeFunction => {}
     }
     mem::free(this)
 }
@@ -137,6 +143,10 @@ def Object::print(&this) {
         Function => {
             let f = this as &Function
             print(`<function {f.name.data}>`)
+        }
+        NativeFunction => {
+            let nf = this as &NativeFunction
+            print(`<native function {nf.name.data}>`)
         }
     }
 }
@@ -171,4 +181,17 @@ def Function::init(&this, name: &String, chunk: &Chunk, arity: u8) {
     .name = name
     .chunk = chunk
     .arity = arity
+}
+
+typedef NativeFunctionType = fn(&VM, u32, &Value): Value
+
+struct NativeFunction {
+    obj: Object
+    name: &String
+    func: NativeFunctionType
+}
+
+def NativeFunction::init(&this, name: &String, func: NativeFunctionType) {
+    .name = name
+    .func = func
 }

@@ -127,16 +127,6 @@ def Compiler::compile_expression(&this, node: &AST) {
         Call => {
             let callee = node.u.call.callee
 
-            // FIXME: Hack for printing...
-            if callee.is_identifier() and callee.u.ident.name == "print" {
-                let args = node.u.call.args
-                for arg in args.iter() {
-                    .compile_expression(arg.expr)
-                }
-                .chunk.push_with_arg_u16(Print, args.size as u16, node.span)
-                return
-            }
-
             .compile_expression(callee)
 
             let args = node.u.call.args
@@ -355,7 +345,7 @@ def Compiler::compile_statement(&this, node: &AST) {
 
             .end_scope(node.span)
         }
-        Return => {
+        Return | ArrowReturn => {
             if node.u.child? {
                 .compile_expression(node.u.child)
             } else {

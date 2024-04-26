@@ -1,8 +1,6 @@
 /// out: 01234
 
-def baz(a, b) {
-    return a + b + "3"
-}
+def baz(a, b) => a + b + "3"
 
 def bar(f) {
     let d = "4"
@@ -10,5 +8,3 @@ def bar(f) {
 }
 
 print("0" + bar("2"))
-
-return 5
