@@ -45,7 +45,7 @@ def Value::is_null(this): bool => .u.uint == NULL_VALUE
 def Value::is_bool(this): bool => .u.uint & BOOL_MASK == BOOL_MASK
 def Value::is_true(this): bool => .u.uint == BOOL_MASK | 3
 def Value::is_false(this): bool => .u.uint == BOOL_MASK | 2
-def Value::as_bool(this): bool => .u.uint == BOOL_MASK & 1
+def Value::as_bool(this): bool => (.u.uint & 1) as bool
 
 def Value::is_int(this): bool => .u.uint & NAN_MASK == INT_MASK
 def Value::as_int(this): i32 => .u.uint as i32
@@ -66,6 +66,7 @@ def Value::as_function(this): &Function => .as_obj() as &Function
 def Value::Float(f: f64): Value => Value::from_float(f)
 def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
 def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
+def Value::Bool(b: bool): Value => if b then Value::True() else Value::False()
 def Value::Null(): Value => Value::from_uint(NULL_VALUE)
 def Value::Int(i: i32): Value => Value::from_uint(i as u64 | INT_MASK)
 def Value::Object(obj: &Object): Value => Value::from_uint(obj as u64 | OBJECT_MASK)

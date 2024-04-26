@@ -1,6 +1,7 @@
 //! A simple bump-allocator for temporary memory
 //! usage while lexing and parsing.
 import std::mem
+import std::logging::log
 
 const MEM_SIZE: u64 = 1u64 * 1024 * 1024 * 1024
 let memory: [u8; MEM_SIZE]
@@ -20,6 +21,6 @@ def alloc(_: mem::State, size: u32): untyped_ptr {
 def dealloc(_: mem::State, ptr: untyped_ptr) {}
 
 def set_as_default() {
-    println("[Bump] Initializing bump allocator")
+    log(Info, "[Bump] Initializing bump allocator")
     mem::set_allocator(allocator: null, alloc, dealloc)
 }

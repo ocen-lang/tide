@@ -16,7 +16,6 @@ import .lexer::{ Lexer }
 import .compiler::{ compile_program }
 import .vm::{ VM }
 import .bump_alloc
-// import .lsp::{ lsp_main }
 
 def usage(code: i32, full: bool) {
     println("Usage:")
@@ -73,9 +72,9 @@ def parse_args(argc: &i32, argv: &&str) {
     }
 
     if debug {
-        init_logging(Debug)
+        init_logging(Debug, time_format: null)
     } else {
-        init_logging(Info)
+        init_logging(Info, time_format: null)
     }
 }
 
@@ -89,7 +88,7 @@ def main(argc: i32, argv: &str) {
     let ast = parser.parse_file(filename)
     parser.exit_with_errors_if_any()
 
-    println(f"[+] Used {bump_alloc::cursor} bytes of memory for parsing")
+    log(Info, f"Used {bump_alloc::cursor} bytes of memory for parsing")
     mem::reset_to_default_allocator()
 
     let vm = VM::make()
@@ -97,9 +96,11 @@ def main(argc: i32, argv: &str) {
 
     if debug {
         chunk.dump()
+        println("============================================")
+        log(Info, "Running VM:")
     }
 
-    vm.run(chunk)
+    vm.interpret_chunk(chunk)
 
     chunk.free()
     vm.free()

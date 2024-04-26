@@ -1,11 +1,12 @@
 import std::vector::Vector
 import std::compact_map::{ Map }
+import std::span::{ Location, Span }
 import std::traits::hash::{ hash_bytes }
 import std::mem
 import std::logging::{ log }
 
-import @bytecode::chunk::{ Chunk }
-import @bytecode::instruction::{ Instruction, OpCode }
+import @errors::{ Error }
+import @bytecode::{ Chunk, OpCode }
 import @main::debug
 import .value::{ Value, String, Object, ObjectType }
 
@@ -26,6 +27,9 @@ def ValueCompareString::eq(this, other: ValueCompareString): bool {
 }
 
 struct VM {
+    chunk: &Chunk
+    ip: &u8
+
     stack: &Vector<Value>
     globals: &Map<&String, Value>
     strings: &Map<ValueCompareString, Value>
@@ -36,6 +40,8 @@ struct VM {
 
 def VM::make(): VM {
     return VM(
+        chunk: null,
+        ip: null,
         stack: Vector<Value>::new(),
         globals: Map<&String, Value>::new(),
         strings: Map<ValueCompareString, Value>::new(),
@@ -58,7 +64,7 @@ def VM::free(&this) {
         cur.free()
         cur = next
     }
-    println("[+] VM freed")
+    log(Info, "VM freed")
 }
 
 //! Allocate a new Object of type `T` and return a reference to it.
@@ -110,10 +116,7 @@ def VM::add(&this, a: Value, b: Value): Value => if {
         let b_str = b.as_string()
         return .take_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
     }
-    else => {
-        // TODO: Runtime error?
-        assert false, f"Cant add {a.type_str()} and {b.type_str()}"
-    }
+    else => .error(f"Cant add {a.type_str()} and {b.type_str()}")
 }
 
 def VM::sub(&this, a: Value, b: Value): Value => if {
@@ -121,10 +124,7 @@ def VM::sub(&this, a: Value, b: Value): Value => if {
     a.is_float() and b.is_int() => Value::Float(a.as_float() - b.as_int() as f64)
     a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 - b.as_float())
     a.is_int() and b.is_int() => Value::Int(a.as_int() - b.as_int())
-    else => {
-        // TODO: Runtime error?
-        assert false, f"Cant sub {a.type_str()} and {b.type_str()}"
-    }
+    else => .error(f"Cant sub {a.type_str()} and {b.type_str()}")
 }
 
 def VM::mul(&this, a: Value, b: Value): Value => if {
@@ -132,10 +132,7 @@ def VM::mul(&this, a: Value, b: Value): Value => if {
     a.is_float() and b.is_int() => Value::Float(a.as_float() * b.as_int() as f64)
     a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 * b.as_float())
     a.is_int() and b.is_int() => Value::Int(a.as_int() * b.as_int())
-    else => {
-        // TODO: Runtime error?
-        assert false, f"Cant mul {a.type_str()} and {b.type_str()}"
-    }
+    else => .error(f"Cant mul {a.type_str()} and {b.type_str()}")
 }
 
 def VM::div(&this, a: Value, b: Value): Value => if {
@@ -143,28 +140,52 @@ def VM::div(&this, a: Value, b: Value): Value => if {
     a.is_float() and b.is_int() => Value::Float(a.as_float() / b.as_int() as f64)
     a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 / b.as_float())
     a.is_int() and b.is_int() => Value::Int(a.as_int() / b.as_int())
-    else => {
-        // TODO: Runtime error?
-        assert false, f"Cant div {a.type_str()} and {b.type_str()}"
+    else => .error(f"Cant div {a.type_str()} and {b.type_str()}")
+}
+
+def VM::less_than(&this, a: Value, b: Value): Value => if {
+    a.is_float() and b.is_float() => Value::Bool(a.as_float() < b.as_float())
+    a.is_float() and b.is_int() => Value::Bool(a.as_float() < b.as_int() as f64)
+    a.is_int() and b.is_float() => Value::Bool(a.as_int() as f64 < b.as_float())
+    a.is_int() and b.is_int() => Value::Bool(a.as_int() < b.as_int())
+    else => .error(f"Cant compare {a.type_str()} and {b.type_str()}")
+}
+
+def VM::greater_than(&this, a: Value, b: Value): Value => if {
+    a.is_float() and b.is_float() => Value::Bool(a.as_float() > b.as_float())
+    a.is_float() and b.is_int() => Value::Bool(a.as_float() > b.as_int() as f64)
+    a.is_int() and b.is_float() => Value::Bool(a.as_int() as f64 > b.as_float())
+    a.is_int() and b.is_int() => Value::Bool(a.as_int() > b.as_int())
+    else => .error(f"Cant compare {a.type_str()} and {b.type_str()}")
+}
+
+def VM::equal(&this, a: Value, b: Value): Value {
+    // Fast Path... all of these are representable as integers
+    if not a.is_obj() and not b.is_obj() {
+        return Value::Bool(a.u.uint == b.u.uint)
     }
+
+    .error(f"Cant compare {a.type_str()} and {b.type_str()}")
+}
+
+def VM::print_value(&this, val: Value) => if {
+    val.is_int() => print(`{val.as_int()}`)
+    val.is_float() => print(`{val.as_float():f}`)
+    val.is_bool() => print(`{val.as_bool()}`)
+    val.is_string() => print(`{val.as_string().data}`)
+    val.is_null() => print("null")
+    else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
 }
 
 //! `print()` intrinsic function
-def VM::print(&this, inst: &Instruction) {
-    let num_args = inst.u.lit_idx as u32
-    for let i = 0; i < num_args; i++ {
+def VM::print(&this, arg: u16) {
+    let num_args = arg as u32
+    for let i = 0; i < num_args as u32; i++ {
         // NOTE: We want to print them in the correct order
         let idx = .stack.size - num_args + i
         let arg = .stack[idx]
         if i > 0 then print(" ")
-        if {
-            arg.is_int() => print(`{arg.as_int()}`)
-            arg.is_float() => print(`{arg.as_float():f}`)
-            arg.is_bool() => print(`{arg.as_bool()}`)
-            arg.is_string() => print(`{arg.as_string().data}`)
-            arg.is_null() => print("null")
-            else => std::panic(`Unhandled value in VM::print(): {arg.u.uint:08x}`)
-        }
+        .print_value(arg) 
     }
     .stack.size -= num_args
     println("")
@@ -173,12 +194,56 @@ def VM::print(&this, inst: &Instruction) {
     .stack.push(Value::Null())
 }
 
-def VM::run(&this, chunk: &Chunk): Value {
+def VM::read_u8(&this): u8 => *.ip++
+
+def VM::read_u16(&this): u16 {
+    let a = .read_u8()
+    let b = .read_u8()
+    return (a as u16) << 8 | (b as u16)
+}
+
+def VM::interpret_chunk(&this, chunk: &Chunk) {
+    .chunk = chunk
+    .ip = chunk.code.data
+    .run()
+}
+
+def VM::read_literal(&this): Value => .chunk.literal(.read_u16())
+
+[exits]
+def VM::error(&this, msg: str) {
+    let off = (.ip - .chunk.code.data) as u32 - 1  // -1 because we read the opcode
+    let line = .chunk.lines_numbers[off]
+    let err_loc = .chunk.start_span.start
+    err_loc.line = line as u32
+    err_loc.col = 1
+    let span = Span(err_loc, err_loc)
+    Error::new(span, msg).panic()
+}
+
+def VM::run(&this) {
     // TODO: branching instructions?
-    for inst in chunk.instructions.iter() {
-        log(Debug, f"[VM] Run: {inst.op}")
-        match inst.op {
-            Constant => .stack.push(chunk.literals[inst.u.lit_idx as u32])
+    let end = .chunk.code.data + .chunk.code.size
+    while .ip < end {
+        if debug {
+            print("\nStack: ")
+            for let i = 0; i < .stack.size; i++ {
+                let val = .stack[i]
+                if i > 0 then print(", ")
+                .print_value(val)
+            }
+            println("")
+
+            let off = (.ip - .chunk.code.data) as u32
+            let line = .chunk.lines_numbers[off]
+            // print(`[VM] {.chunk.start_span.start.filename}:{line}: `)
+            print(`[VM] (L#{line:2d}) {off:4d}: `)
+            .chunk.disassemble_inst(off)
+
+        }
+        let op = .read_u8() as OpCode
+        match op {
+            Constant => .stack.push(.read_literal())
             Add => {
                 let b = .stack.pop()
                 let a = .stack.pop()
@@ -199,14 +264,47 @@ def VM::run(&this, chunk: &Chunk): Value {
                 let a = .stack.pop()
                 .stack.push(.div(a, b))
             }
+            LessThan => {
+                let b = .stack.pop()
+                let a = .stack.pop()
+                .stack.push(.less_than(a, b))
+            }
+            GreaterThan => {
+                let b = .stack.pop()
+                let a = .stack.pop()
+                .stack.push(.greater_than(a, b))
+            }
+            Equal => {
+                let b = .stack.pop()
+                let a = .stack.pop()
+                .stack.push(.equal(a, b))
+            }
+            JumpIfFalse => {
+                let off = .read_u16()
+                let val = .stack.back()  // Peek only
+                if not val.is_bool() {
+                    .error(f"Expected boolean, got {val.type_str()}")
+                }
+                if not val.as_bool() {
+                    .ip = .ip + off
+                }
+            }
+            Jump => {
+                let off = .read_u16()
+                .ip = .ip + off
+            }
+            Loop => {
+                let off = .read_u16()
+                .ip = .ip - off
+            }
             Pop => .stack.pop()
-            Print => .print(&inst)
-            Return => return .stack.pop()
+            Print => .print(.read_u16())
+            Return => .stack.pop() // FIXME: Actually return the value
             Call => {
                 let val = .stack.pop()
                 // TODO: Location?
                 if not val.is_function() {
-                    assert false, f"Value {val.type_str()} is not a function"
+                    .error(f"Can only call functions, got {val.type_str()}")
                 }
 
                 let func = val.as_function()
@@ -214,29 +312,29 @@ def VM::run(&this, chunk: &Chunk): Value {
 
                 // FIXME: Don't use recursion lol... do the control flow properly
                 //        by adjusting the IP and using the stack
-                let res = .run(func.chunk)
-                .stack.push(res)
+                // let res = .run(func.chunk)
+                // .stack.push(res)
+                .error(f"Call not implemented yet")
             }
             GetGlobal => {
-                let name = chunk.literals[inst.u.lit_idx as u32].as_obj() as &String
+                let name = .read_literal().as_string()
                 let it = .globals.get_item(name)
                 if not it? {
-                    // TODO: Runtime error?
-                    assert false, f"Global {name.data} not found"
+                    .error(f"Variable {name.data} not found")
                 }
                 .stack.push(it.value)
             }
             SetGlobal => {
-                let name = chunk.literals[inst.u.lit_idx as u32].as_obj() as &String
-                let value = .stack.pop()
+                let name = .read_literal().as_string()
+                let value = .stack.back()
                 .globals.insert(name, value)
             }
             GetLocal => {
-                let idx = inst.u.lit_idx
+                let idx = .read_u16()
                 .stack.push(.stack.data[idx])
             }
             SetLocal => {
-                let idx = inst.u.lit_idx
+                let idx = .read_u16()
                 .stack.data[idx] = .stack.back()
             }
             Null => .stack.push(Value::Null())
@@ -244,5 +342,5 @@ def VM::run(&this, chunk: &Chunk): Value {
             False => .stack.push(Value::False())
         }
     }
-    return Value::Null()
+    // return Value::Null()
 }

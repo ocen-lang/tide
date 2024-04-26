@@ -1,0 +1,181 @@
+import std::vector::{ Vector }
+import std::compact_map::{ Map }
+import std::span::{ Span }
+import std::buffer::{ Buffer }
+import std::mem
+
+import @vm::value::{ Value, String, Object }
+
+enum OpCode {
+    Null
+    True
+    False
+    Constant
+    SetGlobal
+    SetLocal
+    GetGlobal
+    GetLocal
+    Print
+    Call
+    Pop
+    Add
+    Sub
+    Mul
+    Div
+    Return
+    JumpIfFalse
+    Jump
+    Loop
+    LessThan
+    GreaterThan
+    Equal
+}
+
+struct Chunk {
+    start_span: Span
+    code: Buffer
+    literals: &Vector<Value>
+    literal_map: &Map<Value, u32>
+
+    // Line number for each instruction
+    // TODO: Run-length encoding or something
+    lines_numbers: &Vector<u16>
+}
+
+def Chunk::new(span: Span): &Chunk {
+    let chunk = mem::alloc<Chunk>()
+    chunk.start_span = span
+    chunk.code = Buffer::make()
+    chunk.literals = Vector<Value>::new()
+    chunk.literal_map = Map<Value, u32>::new()
+    chunk.lines_numbers = Vector<u16>::new()
+    return chunk
+}
+
+def Chunk::push(&this, op: OpCode, span: Span) {
+    .code += op as u8
+    .lines_numbers += span.start.line as u16
+}
+
+def Chunk::push_with_value(&this, op: OpCode, value: Value, span: Span) {
+    let it = .literal_map.get_item(value)
+    let idx = match it? {
+        true => it.value
+        false => {
+            let idx = .literals.size
+            assert idx < 65536, "Too many literals in a chunk"
+            .literals.push(value)
+            .literal_map[value] = idx
+            yield idx
+        }
+    }
+    .push_with_arg(op, idx as u16, span)
+}
+
+def Chunk::push_with_arg(&this, op: OpCode, arg: u16, span: Span) {
+    .push(op, span)
+    .code.write_u16(arg)
+    // Push line number twice to keep the same size
+    .lines_numbers += span.start.line as u16
+    .lines_numbers += span.start.line as u16
+}
+
+def Chunk::literal(&this, idx: u16): Value {
+    return .literals[idx as u32]
+}
+
+def Chunk::read_u8(&this, off: &u32): u8 {
+    let res = .code[*off]
+    *off += 1
+    return res
+}
+
+def Chunk::read_u16(&this, off: &u32): u16 {
+    let res = .code[*off] as u16 << 8 | (.code[*off + 1] as u16)
+    *off += 2
+    return res
+}
+
+def Chunk::read_literal(&this, off: &u32): Value {
+    let idx = .read_u16(off)
+    return .literal(idx)
+}
+
+def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = null): u32 {
+    let op = .read_u8(&off) as OpCode // Increments off
+    match op {
+        Constant => { 
+            let constant = .read_literal(&off)
+            print("Constant: "); 
+            constant.print();
+            print("\n");
+
+            if constant.is_function() and found_chunks? {
+                let f = constant.as_function()
+                found_chunks.push(f.chunk)
+            }
+        }
+        Add => println("Add")
+        Sub => println("Sub")
+        Mul => println("Mul")
+        Div => println("Div")
+        LessThan => println("LessThan")
+        GreaterThan => println("GreaterThan")
+        Equal => println("Equal")
+        Loop => {
+            let arg = .read_u16(&off)
+            println(f"Loop {arg}")
+        }
+        JumpIfFalse => {
+            let arg = .read_u16(&off)
+            println(f"JumpIfFalse {arg}")
+        }
+        Jump => {
+            let arg = .read_u16(&off)
+            println(f"Jump {arg}")
+        }
+        Return => println("Return")
+        Call => println("Call (no args)")
+        GetGlobal | SetGlobal => {
+            let val = .read_literal(&off).as_obj() as &String
+            println(f"{op}: {val.data}")
+        }
+        GetLocal | SetLocal => {
+            let idx = .read_u16(&off)
+            println(f"{op}: {idx}")
+        }
+        Null => println("Null")
+        Pop => println("Pop")
+        True => println("True")
+        False => println("False")
+        Print => {
+            let arg = .read_u16(&off)
+            println(f"Print {arg}")
+        }
+    }
+    return off
+}
+
+def Chunk::dump(&this) {
+    let chunks_to_dump = Vector<&Chunk>::new(capacity: 1)
+    defer chunks_to_dump.free()
+
+    println(f"=== Chunk from {.start_span.start}, size: {.code.size} ===")
+    let off = 0
+    while off < .code.size {
+        print(f"{off:04d}: ")
+        off = .disassemble_inst(off, chunks_to_dump)
+    }
+
+    for chunk in chunks_to_dump.iter() {
+        chunk.dump()
+    }
+}
+
+def Chunk::free(&this) {
+    .code.free()
+    .literals.free()
+    .lines_numbers.free()
+    .literal_map.free()
+    mem::free(this)
+}
