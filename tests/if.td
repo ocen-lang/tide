@@ -1,9 +1,8 @@
-
+/// out: hello false false false true false true true true
 
 let f = true
 let g = false
 
-print(f, g)
 if f {
     print("hello")
 } else {

@@ -240,6 +240,9 @@ def VM::push_frame(&this, chunk: &Chunk, ip: &u8, stack_base: u32) {
 }
 
 def VM::pop_frame(&this) {
+    // Discard all the stack variables...
+    .stack.size = .stack_base
+
     let frame = .frames.pop()
     .chunk = frame.chunk
     .ip = frame.ip
@@ -331,7 +334,11 @@ def VM::main_loop(&this) {
             }
             Pop => .stack.pop()
             Print => .print(.read_u16())
-            Return => .pop_frame()
+            Return => {
+                let value = .stack.pop()
+                .pop_frame()
+                .stack.push(value)
+            }
             Call => {
                 let val = .stack.pop()
                 // TODO: Location?

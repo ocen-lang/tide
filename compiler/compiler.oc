@@ -39,40 +39,62 @@ def Compiler::begin_scope(&this) => .scope_depth++
 def Compiler::end_scope(&this, span: Span) {
     .scope_depth--
     while .locals.size > 0 and .locals.back().depth as u32 > .scope_depth {
-        .chunk.push(Pop, span)
+        .chunk.push(Pop, Span(span.end, span.end))
         .locals.pop()
     }
 }
 
-def Compiler::find_local(&this, name: SV): i32 {
+def Compiler::find_local(&this, name: SV, span: Span): i32 {
     for let i = 0; i < .locals.size; i++ {
         let idx = .locals.size - i - 1
         let local = .locals[idx]
         if local.sym.name == name {
+            if idx < 0 {
+                Error::new(
+                    span, "Compiler: Variable used before initialization."
+                ).panic()
+            }
             return idx as i32
         }
     }
     return -1
 }
 
-def Compiler::assign_to_variable(&this, sym: &Symbol, is_statement: bool) {
+//! Create a new variable in the current scope
+def Compiler::create_variable(&this, sym: &Symbol) {
     // Global variable
     if .scope_depth == 0 {
-        .chunk.push_with_value(SetGlobal, .make_str(sym.name), sym.span)
-        if is_statement {
-            .chunk.push(Pop, sym.span)
-        }
+        return 
+    }
 
     // Local variable
-    } else {
-        // FIXME: Check if we're re-defining a variable in scope
-        let local_var = LocalVar(sym, .scope_depth as i32)
-        .locals.push(local_var)
+    let local_var = LocalVar(sym, -1) // Uninitialized...
+    .locals.push(local_var)
+}
+
+//! Mark the last defined variable as initialized
+def Compiler::mark_variable_initialized(&this) {
+    if .scope_depth == 0 {
+        return
     }
+
+    let idx = .locals.size - 1
+    .locals.data[idx].depth = .scope_depth as i32
+} 
+
+//! Save the value on the top of the stack to last defined variable
+def Compiler::define_variable(&this, sym: &Symbol) {
+    // Local variable, nothing to do
+    if .scope_depth > 0 {
+        return
+    }
+    // Global variable
+    .chunk.push_with_value(SetGlobal, .make_str(sym.name), sym.span)
+    .chunk.push(Pop, sym.span)
 }
 
 def Compiler::find_variable(&this, name: SV, span: Span) {
-    let local_idx = .find_local(name)
+    let local_idx = .find_local(name, span)
     // Global Variable
     if local_idx < 0 {
         .chunk.push_with_value(GetGlobal, .make_str(name), span)
@@ -133,7 +155,7 @@ def Compiler::compile_expression(&this, node: &AST) {
                 match lhs.type {
                     Identifier => {
                         let name = lhs.u.ident.name
-                        let idx = .find_local(lhs.u.ident.name)
+                        let idx = .find_local(lhs.u.ident.name, lhs.span)
                         
                         // Global variable
                         if idx < 0 {
@@ -247,24 +269,24 @@ def Compiler::compile_statement(&this, node: &AST) {
             }
 
             .end_scope(node.span)
-
-            while .locals.size > 0 and .locals.back().depth as u32 > .scope_depth {
-                .chunk.push(Pop, Span(node.span.end, node.span.end))
-                .locals.pop()
-            }
         }
         VarDeclaration => {
-            let name = node.u.var_decl.var.sym.name
+            let sym = node.u.var_decl.var.sym
             let expr = node.u.var_decl.init
             if expr? {
                 .compile_expression(expr)
             } else {
                 .chunk.push(Null, node.span)
             }
-            .assign_to_variable(node.u.var_decl.var.sym, is_statement: true)
+            .create_variable(sym)
+            .define_variable(sym)
+            .mark_variable_initialized()
         }
         Function => {
             let ast_func = node.u.func
+
+            .create_variable(ast_func.sym)
+            .mark_variable_initialized()
 
             let name_val = .make_str(ast_func.sym.name)
             let func_obj = allocate_object<Function>(.vm, Function)
@@ -282,7 +304,7 @@ def Compiler::compile_statement(&this, node: &AST) {
             let func_val = Value::Object(&func_obj.obj)
             .chunk.push_with_value(Constant, func_val, node.span)
 
-            .assign_to_variable(ast_func.sym, is_statement: false)
+            .define_variable(ast_func.sym)
         }
         If => .compile_if(node, is_expression: false)
         While => {

@@ -1,0 +1,27 @@
+name: Test
+
+on: [push, pull_request]
+
+jobs:
+  test_ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+
+      - name: Checkout ocen repo
+        uses: actions/checkout@v3
+        with:
+          repository: ocen-lang/ocen
+          path: ocen
+
+      - name: Build ocen
+        run: |
+          cd ocen
+          ./meta/bootstrap.sh
+          echo "OCEN_ROOT=${{ github.workspace }}/ocen" >> $GITHUB_ENV
+          echo "${{ github.workspace }}/ocen/bootstrap" >> $GITHUB_PATH
+
+      - name: Run Tests
+        run: |
+          cd ${{ github.workspace }}
+          python3 meta/test.py

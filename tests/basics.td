@@ -1,4 +1,4 @@
-
+/// out: hola amigos
 
 25 + 5 * 9 + 8 / 2
 "hello" + "world"

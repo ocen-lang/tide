@@ -1,23 +1,14 @@
-// Does not work currently
-
-def foo() {
-    print("Hello in foo")
-}
-
-print("Hello before foo")
-print(foo())
-print("Hello after foo")
+/// out: BAZ 12345
 
 def baz() {
-    let b = "baz"
-    print("in " + b)
-    return "boo"
+    print("BAZ")
+    let b = "4"
+    return b + "5"
 }
 
 def bar() {
-    let b = "bar"
-    print("in " + b)
-    return "kk" + baz()
+    let b = "3"
+    return "2" + b + baz()
 }
 
-print("aa" + bar())
+print("1" + bar())
