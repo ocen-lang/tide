@@ -45,9 +45,11 @@ def Compiler::make(vm: &VM, name: SV, span: Span, enclosing: &Compiler = null): 
         scope_depth: 0,
         enclosing
     )
+    gc::set_compiler(&compiler)
+
     // NOTE: We pass in the compiler here so the GC can find the function object
     //       and not delete it immediately :)
-    let name_val = vm.copy_string(name.data, name.len, &compiler)
+    let name_val = vm.copy_string(name.data, name.len)
     func.init(name_val.as_string(), chunk, 0) // Replace arity later...
     return compiler
 }
@@ -58,7 +60,7 @@ def Compiler::free(&this) {
 }
 
 def Compiler::make_str(&this, text: SV): Value {
-    return .vm.copy_string(text.data, text.len, this)
+    return .vm.copy_string(text.data, text.len)
 }
 
 def Compiler::begin_scope(&this) => .scope_depth++
@@ -386,6 +388,8 @@ def Compiler::compile_statement(&this, node: &AST) {
             }
 
             .define_variable(ast_func.sym)
+
+            gc::set_compiler(this)
             cc.free()
         }
         If => .compile_if(node, is_expression: false)
@@ -459,6 +463,8 @@ def compile_program(vm: &VM, root: &AST): &FunctionCode {
     let compiler = Compiler::make(vm, SV("",0), root.span)
     compiler.compile_ns(root)
     compiler.chunk.push_op(Halt, root.span)
+    gc::set_compiler(null)
     compiler.free()
     return compiler.func
 }
+ 

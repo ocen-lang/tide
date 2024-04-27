@@ -3,25 +3,88 @@ import std::mem
 import .value::{ Value, Object, ObjectType, String, Function, FunctionCode, NativeFunction, UpValue }
 import ..compiler::{ Compiler }
 
+
+const GC_HEAP_GROW_FACTOR: u64 = 2
+
+let bytes_allocated: u64 = 0
+let next_gc: u64 = 1024u64 * 1024
+
+////// GC Allocator Setup
+
+namespace state {
+    let compiler: &Compiler = null
+    let vm: &VM = null
+    let paused: bool = false
+}
+
+def set_compiler(compiler: &Compiler) => state::compiler = compiler
+def set_vm(vm: &VM) => state::vm = vm
+
+def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
+    let old_base = if old? then old - 4 else null
+    let old_size = if old? then *(old_base as &u32) else 0
+
+    if old_size < new_size and not state::paused {
+        if bytes_allocated > next_gc {
+            collect_garbage(state::vm, state::compiler)
+            next_gc = bytes_allocated * GC_HEAP_GROW_FACTOR
+        }
+    }
+
+    // alloc
+    if old_size == 0 {
+        let res = mem::impl::calloc(1, new_size + 4) // 4 bytes for the size
+        bytes_allocated += new_size as u64
+        if GC_DEBUG then println(f"[GC] Allocated {new_size} bytes, total: {bytes_allocated} bytes allocated")
+        *(res as &u32) = new_size
+        return res + 4
+    }
+
+    // free
+    if new_size == 0 {
+        mem::impl::free(old - 4)
+        if GC_DEBUG then println(f"[GC] Deleted {old_size} bytes from {bytes_allocated} bytes allocated")
+        bytes_allocated -= old_size as u64
+        return null
+    }
+
+    // realloc
+    let new_base = mem::impl::realloc(old_base, new_size + 4)
+    bytes_allocated += new_size as u64 - old_size as u64
+    if GC_DEBUG then println(f"[GC] Reallocated {old_size} -> {new_size} bytes, total: {bytes_allocated} bytes allocated")
+    *(new_base as &u32) = new_size
+    return new_base + 4
+}
+
+def gc_alloc(_: mem::State, size: u32): untyped_ptr => gc_mem(null, size)
+def gc_realloc(_: mem::State, ptr: untyped_ptr, old_size: u32, size: u32): untyped_ptr => gc_mem(ptr, size)
+def gc_free(_: mem::State, ptr: untyped_ptr) => gc_mem(ptr, 0)
+
+def initialize_gc_allocator() {
+    if GC_DEBUG then println("[GC] Initializing GC allocator")
+    mem::set_allocator(null, gc_alloc, gc_free, gc_realloc)
+}
+
+/////
+
 let GC_DEBUG: bool = false
 
+// Stats for nerds
 let num_objects_allocated: u32 = 0
 let num_objects_freed: u32 = 0
+let num_garbage_collections: u32 = 0
 
 //! Allocate a new Object of type `T` and return a reference to it.
 //!
 //! Precondition: First field of `T` must be a `Object` field.
 def allocate_object<T>(type: ObjectType, vm: &VM, compiler: &Compiler = null): &T {
-    if GC_DEBUG then println(`[GC] Requesting object {type}, cmpiler: {compiler}`)
-    collect_garbage(vm, compiler)
-
     let res = mem::alloc<T>()
     res.obj.type = type
     res.obj.next = vm.objects
     res.obj.marked = false
     vm.objects = &res.obj
-    if GC_DEBUG then println(`[GC] Allocated object {type}: {res}`)
     num_objects_allocated += 1
+    if GC_DEBUG then println(`[GC] Allocated object {type}: {res}`)
     return res
 }
 
@@ -34,13 +97,10 @@ def free_object(obj: &Object, vm: &VM) {
     match obj.type {
         String => {
             let s = obj as &String
-            // NOTE: Before we free this, make sure we remove it from the global
-            // string table.
-            if GC_DEBUG then println(`[GC] Freeing string: {s.data}, before: {vm.strings.size()}`)
+            // NOTE: Before we free this, make sure we remove it from the string table.
             let vcd = ValueCompareString(s.data, s.len, s.shash)
             vm.strings.remove(vcd)
             s.data.free()
-            if GC_DEBUG then println(`[GC] Freeing string after: {vm.strings.size()}`)
         }
         Function => {
             let c = obj as &Function
@@ -71,7 +131,7 @@ def GarbageCollector::free(&this) {
 def GarbageCollector::mark_object(&this, obj: &Object) {
     if GC_DEBUG {
         print(`[GC] Marking object {obj} : `)
-        // obj.print()
+        obj.print()
         println("")
     }
     if not obj? return
@@ -94,7 +154,6 @@ def GarbageCollector::mark_compiler_roots(&this) {
 }
 
 def GarbageCollector::mark_roots(&this) {
-    if GC_DEBUG then println(f"-- [GC] Marking stack with size: {.vm.stack.size}")
     for value in .vm.stack.iter() {
         .mark_value(value)
     }
@@ -167,6 +226,7 @@ def GarbageCollector::trace_references(&this) {
 def GarbageCollector::sweep_unmarked(&this) {
     let prev: &Object = null
     let cur = .vm.objects
+    let freed = 0
     while cur? {
         if not cur.marked {
             let next = cur.next
@@ -176,11 +236,18 @@ def GarbageCollector::sweep_unmarked(&this) {
                 .vm.objects = next
             }
             free_object(cur, .vm)
+            freed++
+            cur = next
+
         } else {
             cur.marked = false
             prev = cur
+            cur = cur.next
         }
-        cur = cur.next
+    }
+    .vm.grays.clear()
+    if GC_DEBUG and freed > 0 {
+        println(`[GC] Freed {freed} objects`)
     }
 }
 
@@ -193,22 +260,27 @@ def GarbageCollector::run(&this) {
 }
 
 def collect_garbage(vm: &VM, compiler: &Compiler) {
+    // Pausing further garbage collections till this one is done.
+    num_garbage_collections++
+    state::paused = true
+
     let gc = GarbageCollector(vm, compiler)
     gc.run()
     gc.free()
+
+    state::paused = false
 }
 
 def print_stats(vm: &VM) {
     println("[GC] === STATS ===")
+    println(`[GC]           Num GCs: {num_garbage_collections}`)
     println(`[GC] Allocated objects: {num_objects_allocated}`)
     println(`[GC]     Freed objects: {num_objects_freed}`)
     if vm.objects? {
-        println(`[GC]     Remaining objects:`)
+        let num = 0
         for let cur = vm.objects; cur?; cur = cur.next {
-            print(`[GC]         - `)
-            cur.print()
-            println("")
+            num++
         }
+        println(`[GC]     Remaining objects: {num}`)
     }
-    println("[GC] === END ===")
 }

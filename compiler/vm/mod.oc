@@ -112,13 +112,13 @@ def VM::take_string(&this, data: str, len: u32): Value {
 //! Takes in a pointer to compiler to mark any objects that are being held
 //! by the compiler. If this is being called during compile-time, then it must
 //! be passed in, otherwise it can be null.
-def VM::copy_string(&this, data: str, len: u32, compiler: &Compiler = null): Value {
+def VM::copy_string(&this, data: str, len: u32): Value {
     let candidate = ValueCompareString(data, len, hash_bytes(data as &u8, len))
     let item = .strings.get_item(candidate)
     if item? return item.value
 
-    let string = gc::allocate_object<String>(ObjectType::String, this, compiler)
-    let new_data = mem::alloc<char>(len+1)
+    let string = gc::allocate_object<String>(ObjectType::String, this)
+    let new_data = mem::alloc<char>(len+1) // +1 for null terminator, so we can print it
     std::libc::memcpy(new_data, data, len)
     string.init(new_data, len, candidate.shash)
     let value = Value::String(string)
@@ -359,7 +359,7 @@ def VM::close_upvalue(&this, slot: u32) {
 
 def VM::main_loop(&this): i32 {
     while true {
-        if debug then .debug_dump_inst(print_stack: true)
+        if debug then .debug_dump_inst(print_stack: false)
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode

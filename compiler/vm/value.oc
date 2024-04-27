@@ -131,6 +131,14 @@ struct Object {
     marked: bool
 }
 
+def Object::size(&this): u32 => match .type {
+    String => sizeof(String)
+    Function => sizeof(Function)
+    FunctionCode => sizeof(FunctionCode)
+    NativeFunction => sizeof(NativeFunction)
+    UpValue => sizeof(UpValue)
+}
+
 def Object::print(&this) {
     match .type {
         String => {
