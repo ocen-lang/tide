@@ -1,8 +1,9 @@
 import @vm::value::{ Value }
+import .{ VM }
 
 // FIXME: Move into ocen/std/time
 [extern "clock"] def c_clock(): u64
-[extern] const CLOCKS_PER_SEC: u64 
+[extern] const CLOCKS_PER_SEC: u64
 
 def clock(vm: &VM, count: u32, args: &Value): Value {
     return Value::Float(c_clock() as f64 / CLOCKS_PER_SEC as f64)

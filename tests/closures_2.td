@@ -6,16 +6,15 @@ def outer() {
         def inner() {
             print(x)
         }
-    
+
       print("inner")
       return inner
     }
-  
+
     print("outer")
     return middle
 }
-  
+
 let mid = outer()
 let in = mid()
 in()
-  

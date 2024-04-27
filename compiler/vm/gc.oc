@@ -2,6 +2,7 @@ import std::mem
 
 import .value::{ Value, Object, ObjectType, String, Function, FunctionCode, NativeFunction, UpValue }
 import ..compiler::{ Compiler }
+import .{ VM, ValueCompareString }
 
 
 const GC_HEAP_GROW_FACTOR: u64 = 2
@@ -11,14 +12,12 @@ let next_gc: u64 = 1024u64 * 1024
 
 ////// GC Allocator Setup
 
-namespace state {
-    let compiler: &Compiler = null
-    let vm: &VM = null
-    let paused: bool = false
-}
+let scompiler: &Compiler = null
+let svm: &VM = null
+let spaused: bool = false
 
-def set_compiler(compiler: &Compiler) => state::compiler = compiler
-def set_vm(vm: &VM) => state::vm = vm
+def set_compiler(compiler: &Compiler) => scompiler = compiler
+def set_vm(vm: &VM) => svm = vm
 
 def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
     // This function handles _all_ the memory management for the Compiler + VM.
@@ -37,9 +36,9 @@ def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
     let old_base = if old? then old - 8 else null
     let old_size = if old? then *(old_base as &u64) else 0u64
 
-    if old_size < new_size as u64 and not state::paused {
+    if old_size < new_size as u64 and not spaused {
         if bytes_allocated > next_gc {
-            collect_garbage(state::vm, state::compiler)
+            collect_garbage(svm, scompiler)
             next_gc = bytes_allocated * GC_HEAP_GROW_FACTOR
         }
     }
@@ -266,13 +265,13 @@ def GarbageCollector::run(&this) {
 def collect_garbage(vm: &VM, compiler: &Compiler) {
     // Pausing further garbage collections till this one is done.
     num_garbage_collections++
-    state::paused = true
+    spaused = true
 
     let gc = GarbageCollector(vm, compiler)
     gc.run()
     gc.free()
 
-    state::paused = false
+    spaused = false
 }
 
 def print_stats(vm: &VM) {

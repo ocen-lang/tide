@@ -3,6 +3,9 @@
 //! (Not to be confused with the {{std::value}} module, which is for representing parsed JSON values.)
 
 import std::mem
+import std::vector::{ Vector }
+
+import @bytecode::{ Chunk }
 
 
 const NANISH: u64       = 0x7ffc000000000000u64
