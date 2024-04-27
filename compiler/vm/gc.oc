@@ -21,39 +21,43 @@ def set_compiler(compiler: &Compiler) => state::compiler = compiler
 def set_vm(vm: &VM) => state::vm = vm
 
 def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
-    let old_base = if old? then old - 4 else null
-    let old_size = if old? then *(old_base as &u32) else 0
+    // This function handles _all_ the memory management for the Compiler + VM.
+    //   (Note that parsing+lexing is handled by a `bump` allocator - all temp)
+    //
+    // We fall back to C's functions to actually allocate and free memory, but for our
+    // bookkeeping purposes, we want to know the sizes of the pointers. C's functions
+    // don't give us that, so we allocate 8 extra bytes to store the size of the pointer
+    // before the actual pointer.
+    //
+    // Memory layout:
+    //   [ xxxxxxxx | ........ ........ ........ ........ ........  ]
+    //     ^          ^
+    // 8 byte size    Pointer to actual memory return from this function
 
-    if old_size < new_size and not state::paused {
+    let old_base = if old? then old - 8 else null
+    let old_size = if old? then *(old_base as &u64) else 0u64
+
+    if old_size < new_size as u64 and not state::paused {
         if bytes_allocated > next_gc {
             collect_garbage(state::vm, state::compiler)
             next_gc = bytes_allocated * GC_HEAP_GROW_FACTOR
         }
     }
 
-    // alloc
-    if old_size == 0 {
-        let res = mem::impl::calloc(1, new_size + 4) // 4 bytes for the size
-        bytes_allocated += new_size as u64
-        if GC_DEBUG then println(f"[GC] Allocated {new_size} bytes, total: {bytes_allocated} bytes allocated")
-        *(res as &u32) = new_size
-        return res + 4
-    }
-
     // free
     if new_size == 0 {
-        mem::impl::free(old - 4)
+        mem::impl::free(old_base)
         if GC_DEBUG then println(f"[GC] Deleted {old_size} bytes from {bytes_allocated} bytes allocated")
         bytes_allocated -= old_size as u64
         return null
     }
 
-    // realloc
-    let new_base = mem::impl::realloc(old_base, new_size + 4)
+    // alloc / realloc
+    let new_base = mem::impl::realloc(old_base, new_size + 8)
     bytes_allocated += new_size as u64 - old_size as u64
     if GC_DEBUG then println(f"[GC] Reallocated {old_size} -> {new_size} bytes, total: {bytes_allocated} bytes allocated")
-    *(new_base as &u32) = new_size
-    return new_base + 4
+    *(new_base as &u64) = new_size as u64
+    return new_base + 8
 }
 
 def gc_alloc(_: mem::State, size: u32): untyped_ptr => gc_mem(null, size)
@@ -283,4 +287,6 @@ def print_stats(vm: &VM) {
         }
         println(`[GC]     Remaining objects: {num}`)
     }
+    println(`[GC] Remaining bytes allocated: {bytes_allocated}`)
+    println("[GC] === END ===")
 }

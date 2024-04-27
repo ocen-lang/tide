@@ -160,7 +160,7 @@ def Compiler::define_variable(&this, sym: &Symbol) {
     }
 
     // Global variable
-    .chunk.push_with_literal(SetGlobal, .make_str(sym.name), sym.span)
+    .chunk.push_with_literal(.vm, SetGlobal, .make_str(sym.name), sym.span)
     .chunk.push_op(Pop, sym.span)
 }
 
@@ -180,7 +180,7 @@ def Compiler::compile_variable(&this, name: SV, span: Span) {
     }
 
     // Global Variable
-    .chunk.push_with_literal(GetGlobal, .make_str(name), span)
+    .chunk.push_with_literal(.vm, GetGlobal, .make_str(name), span)
 }
 
 def Compiler::make_jump(&this, op: OpCode, span: Span): u32 {
@@ -233,19 +233,19 @@ def Compiler::compile_expression(&this, node: &AST) {
     match node.type {
         IntLiteral => {
             let value = Value::Int(node.u.num_literal.text.to_i32())
-            .chunk.push_with_literal(Constant, value, node.span)
+            .chunk.push_with_literal(.vm, Constant, value, node.span)
         }
         FloatLiteral => {
             let value = Value::Float(std::libc::strtod(node.u.num_literal.text, null))
-            .chunk.push_with_literal(Constant, value, node.span)
+            .chunk.push_with_literal(.vm, Constant, value, node.span)
         }
         StringLiteral => {
             let text = node.u.string_literal
-            .chunk.push_with_literal(Constant, .make_str(text), node.span)
+            .chunk.push_with_literal(.vm, Constant, .make_str(text), node.span)
         }
         BoolLiteral => {
             let value = Value::Bool(node.u.bool_literal)
-            .chunk.push_with_literal(Constant, value, node.span)
+            .chunk.push_with_literal(.vm, Constant, value, node.span)
         }
         Null => .chunk.push_op(Null, node.span)
         Identifier => .compile_variable(node.u.ident.name, node.span)
@@ -282,7 +282,7 @@ def Compiler::compile_expression(&this, node: &AST) {
 
                         // Local variable
                         } else {
-                            .chunk.push_with_literal(SetGlobal, .make_str(name), node.span)
+                            .chunk.push_with_literal(.vm, SetGlobal, .make_str(name), node.span)
 
                         }
                     }
@@ -374,12 +374,12 @@ def Compiler::compile_statement(&this, node: &AST) {
             cc.compile_statement(ast_func.body)
 
             // Add a placeholder return statement if none was provided
-            cc.chunk.push_with_literal(Constant, Value::Null(), node.span)
+            cc.chunk.push_with_literal(.vm, Constant, Value::Null(), node.span)
             cc.chunk.push_op(Return, node.span)
             cc.end_scope(ast_func.sym.span)
 
             let func_val = Value::Object(&cc.func.obj)
-            .chunk.push_with_literal(Constant, func_val, node.span)
+            .chunk.push_with_literal(.vm, Constant, func_val, node.span)
 
             .chunk.push_with_arg_u16(CloseFunction, cc.upvars.size as u16, node.span)
             for up in cc.upvars.iter() {
@@ -418,7 +418,7 @@ def Compiler::compile_statement(&this, node: &AST) {
             if loop.cond? {
                 .compile_expression(loop.cond)
             } else {
-                .chunk.push_with_literal(Constant, Value::True(), node.span)
+                .chunk.push_with_literal(.vm, Constant, Value::True(), node.span)
             }
 
             let false_jump = .make_jump(JumpIfFalse, node.span)

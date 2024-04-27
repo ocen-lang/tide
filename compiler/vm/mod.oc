@@ -70,7 +70,7 @@ def VM::make(): VM {
         ip: null,
         stack_base: 0,
         cur_inst_ip: null,
-        stack: Vector<Value>::new(),
+        stack: Vector<Value>::new(capacity: 256),
         globals: Map<&String, Value>::new(),
         strings: Map<ValueCompareString, Value>::new(),
         open_upvalues: null,
@@ -92,6 +92,7 @@ def VM::free(&this) {
     .globals.free()
     .strings.free()
     .grays.free()
+    .frames.free()
     log(Info, "VM freed")
 }
 
@@ -117,12 +118,18 @@ def VM::copy_string(&this, data: str, len: u32): Value {
     let item = .strings.get_item(candidate)
     if item? return item.value
 
-    let string = gc::allocate_object<String>(ObjectType::String, this)
     let new_data = mem::alloc<char>(len+1) // +1 for null terminator, so we can print it
     std::libc::memcpy(new_data, data, len)
+
+    let string = gc::allocate_object<String>(ObjectType::String, this)
     string.init(new_data, len, candidate.shash)
     let value = Value::String(string)
+
+    // Push on the stack so GC can find it if we collect
+    .stack.push(value)
     .strings.insert(candidate, value)
+    .stack.pop()
+
     return value
 }
 
@@ -140,7 +147,15 @@ def VM::add(&this, a: Value, b: Value): Value => if {
     a.is_string() and b.is_string() => {
         let a_str = a.as_string()
         let b_str = b.as_string()
-        return .take_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
+        // FIXME: Don't pop and push these back on, just peek the values earlier
+        //        We need to do this so that the GC can find the strings when we
+        //        allocate the new one (which can trigger a GC collection)
+        .stack.push(a)
+        .stack.push(b)
+        let res = .take_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
+        .stack.pop() // b
+        .stack.pop() // a
+        yield res
     }
     else => .error(f"Cant add {a.type_str()} and {b.type_str()}")
 }
