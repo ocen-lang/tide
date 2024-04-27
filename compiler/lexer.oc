@@ -117,7 +117,7 @@ def Lexer::lex_string_literal(&this, has_seen_f: bool): Token {
     let text = SV(.source + start, len)
     .inc()
 
-    if .i >= .source_len {
+    if .i > .source_len {
         .errors.push(Error::new(Span(.loc, .loc), "Unterminated string literal"))
     }
 

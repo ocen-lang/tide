@@ -8,7 +8,11 @@ import std::logging::{ log }
 import @errors::{ Error }
 import @bytecode::{ Chunk, OpCode }
 import @main::debug
-import .value::{ Value, String, Object, ObjectType, NativeFunctionType, NativeFunction }
+import .value::{ 
+    Value, String, Object, ObjectType, 
+    NativeFunctionType, NativeFunction, FunctionCode,
+    UpValue, Function
+}
 import .native
 
 //! Wrapper around a string that forces comparison by value, not
@@ -28,6 +32,7 @@ def ValueCompareString::eq(this, other: ValueCompareString): bool {
 }
 
 struct CallFrame {
+    func: &Function
     chunk: &Chunk
     ip: &u8
     stack_base: u32
@@ -37,13 +42,17 @@ struct VM {
     frames: &Vector<CallFrame>
     
     // For the current frame
+    func: &Function
     chunk: &Chunk
     ip: &u8
     stack_base: u32
 
+    cur_inst_ip: &u8
+
     stack: &Vector<Value>
     globals: &Map<&String, Value>
     strings: &Map<ValueCompareString, Value>
+    open_upvalues: &UpValue  // Linked list of open upvalues
 
     //! Linked list of all allocated objects
     objects: &Object
@@ -52,12 +61,15 @@ struct VM {
 def VM::make(): VM {
     return VM(
         frames: Vector<CallFrame>::new(),
+        func: null,
         chunk: null,
         ip: null,
         stack_base: 0,
+        cur_inst_ip: null,
         stack: Vector<Value>::new(),
         globals: Map<&String, Value>::new(),
         strings: Map<ValueCompareString, Value>::new(),
+        open_upvalues: null,
         objects: null
     )
 }
@@ -117,6 +129,12 @@ def VM::copy_string(&this, data: str, len: u32): Value {
     let value = Value::String(string)
     .strings.insert(candidate, value)
     return value
+}
+
+def VM::make_function(&this, code: &FunctionCode): &Function {
+    let func = allocate_object<Function>(this, ObjectType::Function)
+    func.init(code)
+    return func
 }
 
 def VM::add(&this, a: Value, b: Value): Value => if {
@@ -188,8 +206,30 @@ def VM::print_value(&this, val: Value) => if {
     val.is_null() => print("null")
     val.is_obj() => match val.as_obj().type {
         String => print(`{val.as_string().data}`)
-        Function => print(`<function {val.as_function().name.data}>`)
+        Function => {
+            let clos = val.as_function()
+            let name = val.as_function_code().name.data
+
+            if {
+                clos.upvalues? => print(`<func "{name}, {clos.upvalues.size} captures">`)
+                name == "" => print("<script>")
+                else => print(`<function "{name}">`)
+            }
+        }
+        FunctionCode => {
+            let name = val.as_function_code().name.data
+            if name == "" {
+                print("<script>")
+            } else {
+                print(`<function "{name}">`)
+            }
+        }
         NativeFunction => print(`<native {val.as_native_function().name.data}>`)
+        UpValue => {
+            let slot = val.as_upvalue().slot
+            let upval = .stack.data[slot]
+            .print_value(upval)
+        }
     }
     else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
 }
@@ -223,12 +263,16 @@ def VM::setup_native_functions(&this) {
     .add_native_function("print", native::print)
 }
 
-def VM::run(&this, chunk: &Chunk): i32 {
+def VM::run(&this, code: &FunctionCode): i32 {
     .setup_native_functions()
-    .stack.push(Value::Null())
-    .chunk = chunk
-    .ip = chunk.code.data
-    .stack_base = 1
+
+    let func = .make_function(code)
+
+    .stack.push(Value::Object(&func.obj))
+    .func = func
+    .chunk = code.chunk
+    .ip = .chunk.code.data
+    .stack_base = .stack.size
     return .main_loop()
 }
 
@@ -240,11 +284,12 @@ def VM::is_falsey(&this, val: Value): bool => if {
     else => false  // TODO: Custom falsey values?
 }
 
-def VM::push_frame(&this, chunk: &Chunk, ip: &u8, stack_base: u32) {
+def VM::push_frame(&this, func: &Function, stack_base: u32) {
     // Push current frame, and set up the new one
-    .frames.push(CallFrame(.chunk, .ip, .stack_base))
-    .chunk = chunk
-    .ip = ip
+    .frames.push(CallFrame(.func, .chunk, .ip, .stack_base))
+    .func = func
+    .chunk = func.code.chunk
+    .ip = .chunk.code.data
     .stack_base = stack_base
 }
 
@@ -253,40 +298,73 @@ def VM::pop_frame(&this) {
     .stack.size = .stack_base - 1
 
     let frame = .frames.pop()
+    .func = frame.func
     .chunk = frame.chunk
     .ip = frame.ip
     .stack_base = frame.stack_base
 }
 
 [exits]
-def VM::error(&this, msg: str) {
-    let off = (.ip - .chunk.code.data) as u32 - 1  // -1 because we read the opcode
-    let line = .chunk.lines_numbers[off]
-    let err_loc = .chunk.start_span.start
-    err_loc.line = line as u32
-    err_loc.col = 1
-    let span = Span(err_loc, err_loc)
+def VM::error_at(&this, span: Span, msg: str) {
     Error::new(span, msg).panic()
 }
 
-def VM::main_loop(&this): i32 {
-    // TODO: branching instructions?
-    while true {
-        if debug {
-            print("\nStack: ")
-            for let i = 0; i < .stack.size; i++ {
-                let val = .stack[i]
-                if i > 0 then print(", ")
-                .print_value(val)
-            }
-            println("")
+[exits]
+def VM::error(&this, msg: str) {
+    let inst_off = (.cur_inst_ip - .chunk.code.data) as u32
+    let span = .chunk.span_for_offset(inst_off)
+    .error_at(span, msg)
+}
 
-            let off = (.ip - .chunk.code.data) as u32
-            let line = .chunk.lines_numbers[off]
-            print(`[VM] (L#{line:2d}) {off:4d}: `)
-            .chunk.disassemble_inst(off)
-
+def VM::debug_dump_inst(&this, print_stack: bool) {
+    if print_stack {
+        print("\nStack: ()")
+        for let i = 1; i < .stack.size; i++ {
+            let val = .stack[i]
+            if i > 0 then print(" ")
+            val.print()
         }
+        println("")
+    }
+
+    let off = (.ip - .chunk.code.data) as u32
+    let span = .chunk.span_for_offset(off)
+    print(`[VM] (L#{span.start.line:2d}) {off:4d}: `)
+    .chunk.disassemble_inst(off)
+}
+
+def VM::capture_upvalue(&this, slot: u32): &UpValue {
+    let cur = &.open_upvalues
+    while (*cur)? and (*cur).slot > slot {
+        (*cur) = (*cur).next
+    }
+
+    if (*cur)? and (*cur).slot == slot {
+        return *cur
+    }
+
+    let upval = allocate_object<UpValue>(this, ObjectType::UpValue)
+    upval.init(slot)
+
+    (*cur) = upval
+    return upval
+}
+
+def VM::close_upvalue(&this, slot: u32) {
+    while .open_upvalues? and .open_upvalues.slot >= slot {
+        let upval = .open_upvalues
+        let val = .stack.data[upval.slot]
+        upval.closed = val
+        upval.slot = 0
+        .open_upvalues = upval.next
+    }
+}
+
+def VM::main_loop(&this): i32 {
+    while true {
+        if debug then .debug_dump_inst(print_stack: true)
+
+        .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
         match op {
             Halt => return 0
@@ -353,6 +431,7 @@ def VM::main_loop(&this): i32 {
                     return value.as_int()
 
                 } else {
+                    .close_upvalue(.stack_base)
                     .pop_frame()
                     .stack.push(value)
                 }
@@ -361,14 +440,14 @@ def VM::main_loop(&this): i32 {
                 let arity = .read_u8()
                 let val = .stack.back(arity as u32)
 
-                // TODO: Location?
                 if {
                     val.is_function() => {
                         let func = val.as_function()
-                        if func.arity != arity {
-                            .error(f"Function {func.name.data} expected {func.arity} arguments, got {arity}")
+                        let code = func.code
+                        if code.arity != arity {
+                            .error(f"Function {code.name.data} expected {code.arity} arguments, got {arity}")
                         }
-                        .push_frame(func.chunk, func.chunk.code.data, .stack.size - arity as u32)
+                        .push_frame(func, .stack.size - arity as u32)
                     }
                     val.is_native_function() => {
                         let func = val.as_native_function()
@@ -376,6 +455,7 @@ def VM::main_loop(&this): i32 {
                         .stack.size -= arity as u32 + 1  // Pop the arguments and the function
                         .stack.push(res)
                     }
+                    val.is_function_code() => .error("Function should have been a func")
                     else => .error(f"Can only call functions, got {val.type_str()}")
                 }
             }
@@ -403,6 +483,57 @@ def VM::main_loop(&this): i32 {
             Null => .stack.push(Value::Null())
             True => .stack.push(Value::True())
             False => .stack.push(Value::False())
+            CloseFunction => {
+                let arg = .stack.pop()
+                if not arg.is_function_code() {
+                    .error(f"Expected function, got {arg.type_str()}")
+                }
+                let code = arg.as_function_code()
+                let func = .make_function(code)
+
+                let num_upvals = .read_u16() as u32
+                if num_upvals > 0 {
+                    func.upvalues = Vector<&UpValue>::new()
+                }
+                for let i = 0; i < num_upvals; i++ {
+                    let is_local = .read_u8() == 1
+                    let index = .read_u16() as u32
+                    if is_local {
+                        let upval = .capture_upvalue(.stack_base + index)
+                        func.upvalues += upval
+                        // print(`  [VM] Upval {index} is local: {upval.slot} ({upval})\n`)
+
+                    } else {
+                        let upval = .func.upvalues[index]
+                        func.upvalues += upval
+                        // print(`  [VM] Upval {index} is outside: {upval.slot}\n`)
+                    }
+                }
+                .stack.push(Value::Object(&func.obj))
+            }
+            GetUpvalue => {
+                let idx = .read_u16() as u32
+                let upval = .func.upvalues[idx]
+                // print(`  [VM] Getting upval {idx} ({upval})\n`)
+                if upval.slot == 0 {
+                    .stack.push(upval.closed)
+                } else {
+                    .stack.push(.stack.data[upval.slot])
+                }
+            }
+            SetUpvalue => {
+                let idx = .read_u16() as u32
+                let upval = .func.upvalues[idx]
+                if upval.slot == 0 {
+                    upval.closed = .stack.back()
+                } else {
+                    .stack.data[upval.slot] = .stack.back()
+                }
+            }
+            CloseUpvalue => {
+                .close_upvalue(.stack.size - 1)
+                .stack.pop()
+            }
         }
     }
     return 0

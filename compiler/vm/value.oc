@@ -60,11 +60,17 @@ def Value::is_obj_type(this, type: ObjectType): bool {
 def Value::is_string(this): bool => .is_obj_type(String)
 def Value::as_string(this): &String => .as_obj() as &String
 
-def Value::is_function(this): bool => .is_obj_type(Function)
-def Value::as_function(this): &Function => .as_obj() as &Function
+def Value::is_function_code(this): bool => .is_obj_type(FunctionCode)
+def Value::as_function_code(this): &FunctionCode => .as_obj() as &FunctionCode
 
 def Value::is_native_function(this): bool => .is_obj_type(NativeFunction)
 def Value::as_native_function(this): &NativeFunction => .as_obj() as &NativeFunction
+
+def Value::is_upvalue(this): bool => .is_obj_type(UpValue)
+def Value::as_upvalue(this): &UpValue => .as_obj() as &UpValue
+
+def Value::is_function(this): bool => .is_obj_type(Function)
+def Value::as_function(this): &Function => .as_obj() as &Function
 
 def Value::Float(f: f64): Value => Value::from_float(f)
 def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
@@ -87,7 +93,9 @@ def Value::type_str(this): str => if {
         yield match obj.type {
             String => "string"
             Function => "function"
+            FunctionCode => "code"
             NativeFunction => "<native function>"
+            UpValue => "upvalue"
         }
     }
     else => "<unknown>"
@@ -107,8 +115,12 @@ def Value::print(this) => if {
 
 enum ObjectType {
     String
-    Function
     NativeFunction
+    UpValue
+    //! Representing the function code itself, not a closure
+    FunctionCode
+    //! Representing a function with captured variables
+    Function
 }
 
 //! Generic Heap-allocated object. Should only be
@@ -125,11 +137,17 @@ def Object::free(&this) {
             s.data.free()
         }
         Function => {
-            let f = this as &Function
+            let c = this as &Function
+            if c.upvalues? {
+                c.upvalues.free()
+            }
+        }
+        FunctionCode => {
+            let f = this as &FunctionCode
             f.chunk.free()
             // NOTE: A function does not own its name
         }
-        NativeFunction => {}
+        NativeFunction | UpValue => {}
     }
     mem::free(this)
 }
@@ -141,12 +159,25 @@ def Object::print(&this) {
             print(`"{s.data}"`)
         }
         Function => {
-            let f = this as &Function
-            print(`<function {f.name.data}>`)
+            let c = this as &Function
+            let name = c.code.name.data
+            if {
+                name == "" => print("<script>")
+                not c.upvalues? => print(f"<function {name}>")
+                else => print(f"<function {name}, {c.upvalues.size} captures>")
+            }
+        }
+        FunctionCode => {
+            let f = this as &FunctionCode
+            print(`<code "{f.name.data}">`)
         }
         NativeFunction => {
             let nf = this as &NativeFunction
             print(`<native function {nf.name.data}>`)
+        }
+        UpValue => {
+            let uv = this as &UpValue
+            print(f"<upvalue {uv.slot}>")
         }
     }
 }
@@ -169,7 +200,32 @@ def String::init(&this, data: str, len: u32, shash: u32) {
     .shash = shash
 }
 
+struct UpValue {
+    obj: Object
+    slot: u32
+    next: &UpValue
+    closed: Value
+}
+
+def UpValue::init(&this, slot: u32) {
+    .slot = slot
+    .next = null
+    .closed = Value::Null()
+}
+
 struct Function {
+    obj: Object
+    code: &FunctionCode
+    upvalues: &Vector<&UpValue>
+}
+
+def Function::init(&this, code: &FunctionCode) {
+    .code = code
+    .upvalues = null
+}
+
+//! Representing the function itself, not a closure
+struct FunctionCode {
     obj: Object
     name: &String
     chunk: &Chunk
@@ -177,10 +233,12 @@ struct Function {
 }
 
 //! Expects `obj` to already be initialized
-def Function::init(&this, name: &String, chunk: &Chunk, arity: u8) {
+def FunctionCode::init(&this, name: &String, chunk: &Chunk, arity: u8) {
     .name = name
     .chunk = chunk
     .arity = arity
+    // this is owned by the function, so the GC doesn't need to
+    // know about it
 }
 
 typedef NativeFunctionType = fn(&VM, u32, &Value): Value

@@ -1029,6 +1029,7 @@ def Parser::parse_statement(&this): &AST {
 
     match .token().type {
         OpenCurly => node = .parse_block()
+        Def => node = .parse_function()
         Return => {
             .consume(Return)
             let expr = null as &AST
@@ -1444,7 +1445,6 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
                 still_parsing_attributes = true
                 yield null as &AST
             }
-            Def => .parse_function()
             // Import => {
             //     let import_ = .parse_import()
             //     if import_? then .ns.imports.push(import_)   // For typechecker...

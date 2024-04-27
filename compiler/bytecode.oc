@@ -29,6 +29,15 @@ enum OpCode {
     GreaterThan
     Equal
     Halt
+    CloseFunction
+    SetUpvalue
+    GetUpvalue
+    CloseUpvalue
+}
+
+struct DebugLocRun {
+    span: Span
+    count: u32
 }
 
 struct Chunk {
@@ -39,7 +48,7 @@ struct Chunk {
 
     // Line number for each instruction
     // TODO: Run-length encoding or something
-    lines_numbers: &Vector<u16>
+    debug_locs: &Vector<DebugLocRun>
 }
 
 def Chunk::new(span: Span): &Chunk {
@@ -48,16 +57,50 @@ def Chunk::new(span: Span): &Chunk {
     chunk.code = Buffer::make()
     chunk.literals = Vector<Value>::new()
     chunk.literal_map = Map<Value, u32>::new()
-    chunk.lines_numbers = Vector<u16>::new()
+    chunk.debug_locs = Vector<DebugLocRun>::new()
     return chunk
 }
 
-def Chunk::push(&this, op: OpCode, span: Span) {
-    .code += op as u8
-    .lines_numbers += span.start.line as u16
+def Chunk::span_for_offset(&this, off: u32): Span {
+    let cur = 0
+    for it in .debug_locs.iter() {
+        cur += it.count
+        if cur > off return it.span
+    }
+    return .start_span
 }
 
-def Chunk::push_with_value(&this, op: OpCode, value: Value, span: Span) {
+def Chunk::push_u8(&this, val: u8, span: Span) {
+    .code += val
+    if .debug_locs.size > 0 and .debug_locs.back().span == span {
+        .debug_locs.back_ptr().count += 1
+    } else {
+        .debug_locs.push(DebugLocRun(span, count: 1))
+    }
+}
+
+def Chunk::push_u16(&this, val: u16, span: Span) {
+    .code.write_u16(val)
+    if .debug_locs.size > 0 and .debug_locs.back().span == span {
+        .debug_locs.back_ptr().count += 2
+    } else {
+        .debug_locs.push(DebugLocRun(span, count: 2))
+    }
+}
+
+def Chunk::push_op(&this, op: OpCode, span: Span) => .push_u8(op as u8, span)
+
+def Chunk::push_with_arg_u16(&this, op: OpCode, arg: u16, span: Span) {
+    .push_op(op, span)
+    .push_u16(arg, span)
+}
+
+def Chunk::push_with_arg_u8(&this, op: OpCode, arg: u8, span: Span) {
+    .push_op(op, span)
+    .push_u8(arg, span)
+}
+
+def Chunk::push_with_literal(&this, op: OpCode, value: Value, span: Span) {
     let it = .literal_map.get_item(value)
     let idx = match it? {
         true => it.value
@@ -70,20 +113,6 @@ def Chunk::push_with_value(&this, op: OpCode, value: Value, span: Span) {
         }
     }
     .push_with_arg_u16(op, idx as u16, span)
-}
-
-def Chunk::push_with_arg_u16(&this, op: OpCode, arg: u16, span: Span) {
-    .push(op, span)
-    .code.write_u16(arg)
-    // Push line number twice to keep the same size
-    .lines_numbers += span.start.line as u16
-    .lines_numbers += span.start.line as u16
-}
-
-def Chunk::push_with_arg_u8(&this, op: OpCode, arg: u8, span: Span) {
-    .push(op, span)
-    .code.write_u8(arg)
-    .lines_numbers += span.start.line as u16
 }
 
 def Chunk::literal(&this, idx: u16): Value {
@@ -116,8 +145,8 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
             constant.print();
             print("\n");
 
-            if constant.is_function() and found_chunks? {
-                let f = constant.as_function()
+            if constant.is_function_code() and found_chunks? {
+                let f = constant.as_function_code()
                 found_chunks.push(f.chunk)
             }
         }
@@ -147,14 +176,24 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
             let val = .read_literal(&off).as_obj() as &String
             println(f"{op}: {val.data}")
         }
-        GetLocal | SetLocal => {
+        GetLocal | SetLocal | SetUpvalue | GetUpvalue => {
             let idx = .read_u16(&off)
             println(f"{op}: {idx}")
+        }
+        CloseFunction => {
+            let count = .read_u16(&off)
+            print(f"CloseFunction [{count}]: ")
+            for let i = 0u16; i < count; i += 1 {
+                if i > 0 print(" ")
+                print(`({.read_u8(&off) as bool}, {.read_u16(&off)})`)
+            }
+            print("\n")
         }
         Null => println("Null")
         Pop => println("Pop")
         True => println("True")
         False => println("False")
+        CloseUpvalue => println("CloseUpvalue")
     }
     return off
 }
@@ -178,7 +217,7 @@ def Chunk::dump(&this) {
 def Chunk::free(&this) {
     .code.free()
     .literals.free()
-    .lines_numbers.free()
+    .debug_locs.free()
     .literal_map.free()
     mem::free(this)
 }
