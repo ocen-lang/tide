@@ -10,8 +10,8 @@ import @errors::{ Error }
 import @bytecode::{ Chunk, OpCode }
 import @main::debug
 import .gc
-import .value::{ 
-    Value, String, Object, ObjectType, 
+import .value::{
+    Value, String, Object, ObjectType,
     NativeFunctionType, NativeFunction, FunctionCode,
     UpValue, Function
 }
@@ -42,7 +42,7 @@ struct CallFrame {
 
 struct VM {
     frames: &Vector<CallFrame>
-    
+
     // For the current frame
     func: &Function
     chunk: &Chunk
@@ -374,6 +374,10 @@ def VM::close_upvalue(&this, slot: u32) {
 
 def VM::main_loop(&this): i32 {
     while true {
+        // FIXME: For `tests/native_fn.td`, having this line here
+        //        causes perf to go from 1.2s -> 1.6s, _even if_
+        //        the debug == false. Saving it into a local variable
+        //        from the global one doesn't help either.
         if debug then .debug_dump_inst(print_stack: false)
 
         .cur_inst_ip = .ip
