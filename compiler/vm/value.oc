@@ -128,28 +128,7 @@ enum ObjectType {
 struct Object {
     type: ObjectType
     next: &Object
-}
-
-def Object::free(&this) {
-    match .type {
-        String => {
-            let s = this as &String
-            s.data.free()
-        }
-        Function => {
-            let c = this as &Function
-            if c.upvalues? {
-                c.upvalues.free()
-            }
-        }
-        FunctionCode => {
-            let f = this as &FunctionCode
-            f.chunk.free()
-            // NOTE: A function does not own its name
-        }
-        NativeFunction | UpValue => {}
-    }
-    mem::free(this)
+    marked: bool
 }
 
 def Object::print(&this) {
@@ -162,14 +141,18 @@ def Object::print(&this) {
             let c = this as &Function
             let name = c.code.name.data
             if {
-                name == "" => print("<script>")
+                not name? or name == "" => print("<script>")
                 not c.upvalues? => print(f"<function {name}>")
                 else => print(f"<function {name}, {c.upvalues.size} captures>")
             }
         }
         FunctionCode => {
             let f = this as &FunctionCode
-            print(`<code "{f.name.data}">`)
+            if f.name? {
+                print(f"<code {f.name.data}>")
+            } else {
+                print("<code>")
+            }
         }
         NativeFunction => {
             let nf = this as &NativeFunction

@@ -5,7 +5,8 @@ import std::sv::{ SV }
 import @ast::nodes::{ AST, Variable, Symbol }
 import @errors::{ Error }
 import @bytecode::{ Chunk, OpCode  }
-import @vm::{ VM, allocate_object }
+import @vm::{ VM }
+import @vm::gc
 import @vm::value::{ Value, String, FunctionCode }
 
 struct LocalVar {
@@ -29,19 +30,26 @@ struct Compiler {
     enclosing: &Compiler
 }
 
-def Compiler::make(func: &FunctionCode, vm: &VM, span: Span, enclosing: &Compiler = null): Compiler {
+def Compiler::make(vm: &VM, name: SV, span: Span, enclosing: &Compiler = null): Compiler {
     let chunk = Chunk::new(span)
     let locals = Vector<LocalVar>::new()
     let upvars = Vector<UpVar>::new(capacity: 256)
-    return Compiler(
+    let func = gc::allocate_object<FunctionCode>(FunctionCode, vm, enclosing)
+
+    let compiler = Compiler(
         vm,
         func,
-        func.chunk,
+        chunk,
         upvars,
         locals,
         scope_depth: 0,
         enclosing
     )
+    // NOTE: We pass in the compiler here so the GC can find the function object
+    //       and not delete it immediately :)
+    let name_val = vm.copy_string(name.data, name.len, &compiler)
+    func.init(name_val.as_string(), chunk, 0) // Replace arity later...
+    return compiler
 }
 
 def Compiler::free(&this) {
@@ -50,7 +58,7 @@ def Compiler::free(&this) {
 }
 
 def Compiler::make_str(&this, text: SV): Value {
-    return .vm.copy_string(text.data, text.len)
+    return .vm.copy_string(text.data, text.len, this)
 }
 
 def Compiler::begin_scope(&this) => .scope_depth++
@@ -237,6 +245,7 @@ def Compiler::compile_expression(&this, node: &AST) {
             let value = Value::Bool(node.u.bool_literal)
             .chunk.push_with_literal(Constant, value, node.span)
         }
+        Null => .chunk.push_op(Null, node.span)
         Identifier => .compile_variable(node.u.ident.name, node.span)
         Call => {
             let callee = node.u.call.callee
@@ -351,12 +360,9 @@ def Compiler::compile_statement(&this, node: &AST) {
             .create_variable(ast_func.sym)
             .mark_variable_initialized()
 
-            let name_val = .make_str(ast_func.sym.name)
-            let func_obj = allocate_object<FunctionCode>(.vm, FunctionCode)
-            let chunk = Chunk::new(ast_func.span)
-            func_obj.init(name_val.as_string(), chunk, ast_func.params.size as u8)
+            let cc = Compiler::make(.vm, ast_func.sym.name, ast_func.sym.span, enclosing: this)
+            cc.func.arity = ast_func.params.size as u8
 
-            let cc = Compiler::make(func_obj, .vm, node.span, enclosing: this)
             cc.begin_scope()
             for param in ast_func.params.iter() {
                 cc.create_variable(param.sym)
@@ -370,7 +376,7 @@ def Compiler::compile_statement(&this, node: &AST) {
             cc.chunk.push_op(Return, node.span)
             cc.end_scope(ast_func.sym.span)
 
-            let func_val = Value::Object(&func_obj.obj)
+            let func_val = Value::Object(&cc.func.obj)
             .chunk.push_with_literal(Constant, func_val, node.span)
 
             .chunk.push_with_arg_u16(CloseFunction, cc.upvars.size as u16, node.span)
@@ -450,15 +456,9 @@ def Compiler::compile_ns(&this, root: &AST) {
 
 // TODO: More complex structures than just expressions?
 def compile_program(vm: &VM, root: &AST): &FunctionCode {
-    let func = allocate_object<FunctionCode>(vm, FunctionCode)
-    let func_name = vm.copy_string("", 0)  // Empty string for script
-    let chunk = Chunk::new(root.span)
-    func.init(func_name.as_string(), chunk, 0)
-
-    let compiler = Compiler::make(func, vm, root.span)
+    let compiler = Compiler::make(vm, SV("",0), root.span)
     compiler.compile_ns(root)
     compiler.chunk.push_op(Halt, root.span)
     compiler.free()
-
-    return func
+    return compiler.func
 }

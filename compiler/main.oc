@@ -15,6 +15,7 @@ import .parser::{ Parser }
 import .lexer::{ Lexer }
 import .compiler::{ compile_program }
 import .vm::{ VM }
+import .vm::gc
 import .bump_alloc
 
 def usage(code: i32, full: bool) {
@@ -73,15 +74,15 @@ def parse_args(argc: &i32, argv: &&str) {
         usage(code: 1, false)
     }
 
-    if debug {
-        init_logging(Debug, time_format: null)
-    } else {
-        init_logging(Info, time_format: null)
+    if {
+        silent => init_logging(Error, time_format: null)
+        debug => init_logging(Debug, time_format: null)
+        else => init_logging(Info, time_format: null)
     }
 }
 
 def main(argc: i32, argv: &str) {
-    bump_alloc::set_as_default()
+    bump_alloc::initialize()
 
     let program_name = shift_args(&argc, &argv)
     parse_args(&argc, &argv)
@@ -91,7 +92,6 @@ def main(argc: i32, argv: &str) {
     parser.exit_with_errors_if_any()
 
     log(Info, f"Used {bump_alloc::cursor} bytes of memory for parsing")
-    mem::reset_to_default_allocator()
 
     let vm = VM::make()
     let script = compile_program(&vm, ast)
@@ -104,5 +104,6 @@ def main(argc: i32, argv: &str) {
 
     let status = vm.run(script)
     vm.free()
+    gc::print_stats(&vm)
     std::exit(status)
 }

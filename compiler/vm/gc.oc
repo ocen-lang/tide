@@ -1,0 +1,214 @@
+import std::mem
+
+import .value::{ Value, Object, ObjectType, String, Function, FunctionCode, NativeFunction, UpValue }
+import ..compiler::{ Compiler }
+
+let GC_DEBUG: bool = false
+
+let num_objects_allocated: u32 = 0
+let num_objects_freed: u32 = 0
+
+//! Allocate a new Object of type `T` and return a reference to it.
+//!
+//! Precondition: First field of `T` must be a `Object` field.
+def allocate_object<T>(type: ObjectType, vm: &VM, compiler: &Compiler = null): &T {
+    if GC_DEBUG then println(`[GC] Requesting object {type}, cmpiler: {compiler}`)
+    collect_garbage(vm, compiler)
+
+    let res = mem::alloc<T>()
+    res.obj.type = type
+    res.obj.next = vm.objects
+    res.obj.marked = false
+    vm.objects = &res.obj
+    if GC_DEBUG then println(`[GC] Allocated object {type}: {res}`)
+    num_objects_allocated += 1
+    return res
+}
+
+//! Frees this object only, and doesn't touch any objects it references.
+def free_object(obj: &Object, vm: &VM) {
+    num_objects_freed += 1
+
+    if GC_DEBUG then println(`[GC] Freeing object {obj.type}: {obj}`)
+
+    match obj.type {
+        String => {
+            let s = obj as &String
+            // NOTE: Before we free this, make sure we remove it from the global
+            // string table.
+            if GC_DEBUG then println(`[GC] Freeing string: {s.data}, before: {vm.strings.size()}`)
+            let vcd = ValueCompareString(s.data, s.len, s.shash)
+            vm.strings.remove(vcd)
+            s.data.free()
+            if GC_DEBUG then println(`[GC] Freeing string after: {vm.strings.size()}`)
+        }
+        Function => {
+            let c = obj as &Function
+            if c.upvalues? {
+                c.upvalues.free()
+            }
+        }
+        FunctionCode => {
+            let f = obj as &FunctionCode
+            f.chunk.free()
+            // NOTE: A function does not own its name
+        }
+        NativeFunction | UpValue => {}
+    }
+
+    mem::free(obj)
+}
+
+struct GarbageCollector {
+    vm: &VM
+    compiler: &Compiler
+}
+
+def GarbageCollector::free(&this) {
+    // Do nothing for now...
+}
+
+def GarbageCollector::mark_object(&this, obj: &Object) {
+    if GC_DEBUG {
+        print(`[GC] Marking object {obj} : `)
+        // obj.print()
+        println("")
+    }
+    if not obj? return
+    if obj.marked return
+
+    obj.marked = true
+    .vm.grays += obj
+}
+
+def GarbageCollector::mark_value(&this, value: Value) {
+    if value.is_obj() then .mark_object(value.as_obj())
+}
+
+def GarbageCollector::mark_compiler_roots(&this) {
+    let cur = .compiler
+    while cur? {
+        .mark_object(&cur.func.obj)
+        cur = cur.enclosing
+    }
+}
+
+def GarbageCollector::mark_roots(&this) {
+    if GC_DEBUG then println(f"-- [GC] Marking stack with size: {.vm.stack.size}")
+    for value in .vm.stack.iter() {
+        .mark_value(value)
+    }
+
+    .mark_object(&.vm.func.obj)
+    for frame in .vm.frames.iter() {
+        .mark_object(&frame.func.obj)
+    }
+
+    for let cur = .vm.open_upvalues; cur?; cur = cur.next {
+        .mark_object(&cur.obj)
+    }
+
+    for it in .vm.globals.items.iter() {
+        .mark_object(&it.key.obj)
+        .mark_value(it.value)
+    }
+
+    .mark_compiler_roots()
+}
+
+def GarbageCollector::blacken_object(&this, obj: &Object) {
+    if GC_DEBUG {
+        print(`[GC] Blackening object {obj} : `)
+        obj.print()
+        println("")
+    }
+    match obj.type {
+        String => {}
+        NativeFunction => {
+            let nf = obj as &NativeFunction
+            .mark_object(&nf.name.obj)
+        }
+        UpValue => {
+            let uv = obj as &UpValue
+            if uv.slot == 0 {
+                .mark_value(uv.closed)
+            }
+        }
+        FunctionCode => {
+            let f = obj as &FunctionCode
+            .mark_object(&f.name.obj)
+            if f.chunk? {
+                for constant in f.chunk.literals.iter() {
+                    .mark_value(constant)
+                }
+            }
+        }
+        Function => {
+            let f = obj as &Function
+            if f.code? {
+                .mark_object(&f.code.obj)
+            }
+            if f.upvalues? {
+                for upvalue in f.upvalues.iter() {
+                    .mark_object(&upvalue.obj)
+                }
+            }
+        }
+    }
+}
+
+def GarbageCollector::trace_references(&this) {
+    while not .vm.grays.is_empty() {
+        let obj = .vm.grays.pop()
+        .blacken_object(obj)
+    }
+}
+
+def GarbageCollector::sweep_unmarked(&this) {
+    let prev: &Object = null
+    let cur = .vm.objects
+    while cur? {
+        if not cur.marked {
+            let next = cur.next
+            if prev? {
+                prev.next = next
+            } else {
+                .vm.objects = next
+            }
+            free_object(cur, .vm)
+        } else {
+            cur.marked = false
+            prev = cur
+        }
+        cur = cur.next
+    }
+}
+
+def GarbageCollector::run(&this) {
+    if GC_DEBUG then println("[GC] === BEGIN ===")
+    .mark_roots()
+    .trace_references()
+    .sweep_unmarked()
+    if GC_DEBUG then println("[GC] === END ===")
+}
+
+def collect_garbage(vm: &VM, compiler: &Compiler) {
+    let gc = GarbageCollector(vm, compiler)
+    gc.run()
+    gc.free()
+}
+
+def print_stats(vm: &VM) {
+    println("[GC] === STATS ===")
+    println(`[GC] Allocated objects: {num_objects_allocated}`)
+    println(`[GC]     Freed objects: {num_objects_freed}`)
+    if vm.objects? {
+        println(`[GC]     Remaining objects:`)
+        for let cur = vm.objects; cur?; cur = cur.next {
+            print(`[GC]         - `)
+            cur.print()
+            println("")
+        }
+    }
+    println("[GC] === END ===")
+}

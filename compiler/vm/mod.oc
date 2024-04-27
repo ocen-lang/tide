@@ -5,9 +5,11 @@ import std::traits::hash::{ hash_bytes }
 import std::mem
 import std::logging::{ log }
 
+import ..compiler::{ Compiler }
 import @errors::{ Error }
 import @bytecode::{ Chunk, OpCode }
 import @main::debug
+import .gc
 import .value::{ 
     Value, String, Object, ObjectType, 
     NativeFunctionType, NativeFunction, FunctionCode,
@@ -56,6 +58,8 @@ struct VM {
 
     //! Linked list of all allocated objects
     objects: &Object
+    //! Used for GC tracking
+    grays: &Vector<&Object>
 }
 
 def VM::make(): VM {
@@ -70,37 +74,25 @@ def VM::make(): VM {
         globals: Map<&String, Value>::new(),
         strings: Map<ValueCompareString, Value>::new(),
         open_upvalues: null,
-        objects: null
+        objects: null,
+        grays: Vector<&Object>::new()
     )
 }
 
 def VM::free(&this) {
+    let cur = .objects
+
+    .func = null
+    .stack.clear()
+    .globals.clear()
+
+    gc::collect_garbage(this, null)
+
     .stack.free()
     .globals.free()
     .strings.free()
-    let cur = .objects
-    while cur? {
-        if debug {
-            print("Freeing object:")
-            cur.print()
-            println("")
-        }
-        let next = cur.next
-        cur.free()
-        cur = next
-    }
+    .grays.free()
     log(Info, "VM freed")
-}
-
-//! Allocate a new Object of type `T` and return a reference to it.
-//!
-//! Precondition: First field of `T` must be a `Object` field.
-def allocate_object<T>(vm: &VM, type: ObjectType): &T {
-    let res = mem::alloc<T>()
-    res.obj.type = type
-    res.obj.next = vm.objects
-    vm.objects = &res.obj
-    return res
 }
 
 def VM::take_string(&this, data: str, len: u32): Value {
@@ -110,20 +102,23 @@ def VM::take_string(&this, data: str, len: u32): Value {
         data.free()
         return item.value
     }
-    let string = allocate_object<String>(this, ObjectType::String)
+    let string = gc::allocate_object<String>(ObjectType::String, this)
     string.init(data, len, candidate.shash)
     let value = Value::String(string)
     .strings.insert(candidate, value)
     return value
 }
 
-def VM::copy_string(&this, data: str, len: u32): Value {
+//! Takes in a pointer to compiler to mark any objects that are being held
+//! by the compiler. If this is being called during compile-time, then it must
+//! be passed in, otherwise it can be null.
+def VM::copy_string(&this, data: str, len: u32, compiler: &Compiler = null): Value {
     let candidate = ValueCompareString(data, len, hash_bytes(data as &u8, len))
     let item = .strings.get_item(candidate)
     if item? return item.value
 
-    let string = allocate_object<String>(this, ObjectType::String)
-    let new_data = mem::alloc<char>(len)
+    let string = gc::allocate_object<String>(ObjectType::String, this, compiler)
+    let new_data = mem::alloc<char>(len+1)
     std::libc::memcpy(new_data, data, len)
     string.init(new_data, len, candidate.shash)
     let value = Value::String(string)
@@ -132,7 +127,7 @@ def VM::copy_string(&this, data: str, len: u32): Value {
 }
 
 def VM::make_function(&this, code: &FunctionCode): &Function {
-    let func = allocate_object<Function>(this, ObjectType::Function)
+    let func = gc::allocate_object<Function>(ObjectType::Function, this)
     func.init(code)
     return func
 }
@@ -196,7 +191,7 @@ def VM::equal(&this, a: Value, b: Value): Value {
         return Value::Bool(a.u.uint == b.u.uint)
     }
 
-    .error(f"Cant compare {a.type_str()} and {b.type_str()}")
+    return Value::Bool(false)
 }
 
 def VM::print_value(&this, val: Value) => if {
@@ -246,7 +241,7 @@ def VM::add_native_function(&this, name: str, func: NativeFunctionType) {
     let s = .copy_string(name, name.len())
     .stack.push(s)
 
-    let native_fn = allocate_object<NativeFunction>(this, NativeFunction)
+    let native_fn = gc::allocate_object<NativeFunction>(NativeFunction, this)
     native_fn.init(s.as_string(), func)
     let value = Value::Object(&native_fn.obj)
     .stack.push(value)
@@ -264,15 +259,17 @@ def VM::setup_native_functions(&this) {
 }
 
 def VM::run(&this, code: &FunctionCode): i32 {
-    .setup_native_functions()
-
+    .stack.push(Value::Object(&code.obj))
     let func = .make_function(code)
-
+    .stack.pop()
     .stack.push(Value::Object(&func.obj))
+
     .func = func
     .chunk = code.chunk
     .ip = .chunk.code.data
     .stack_base = .stack.size
+
+    .setup_native_functions()
     return .main_loop()
 }
 
@@ -343,7 +340,7 @@ def VM::capture_upvalue(&this, slot: u32): &UpValue {
         return *cur
     }
 
-    let upval = allocate_object<UpValue>(this, ObjectType::UpValue)
+    let upval = gc::allocate_object<UpValue>(ObjectType::UpValue, this)
     upval.init(slot)
 
     (*cur) = upval

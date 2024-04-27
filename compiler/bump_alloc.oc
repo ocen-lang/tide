@@ -20,7 +20,7 @@ def alloc(_: mem::State, size: u32): untyped_ptr {
 
 def dealloc(_: mem::State, ptr: untyped_ptr) {}
 
-def set_as_default() {
+def initialize() {
     log(Info, "[Bump] Initializing bump allocator")
     mem::set_allocator(allocator: null, alloc, dealloc)
 }

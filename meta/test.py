@@ -96,6 +96,15 @@ def handle_test(interpreter: str, num: int, path: Path, expected: Expected) -> T
     if expected_out not in output:
         return False, f'Incorrect output produced\n  expected: {repr(expected_out)}\n  got: {repr(output)}', path
 
+    allocated_objects = re.search(r'\[GC\]\s*Allocated objects: (\d+)', output)
+    if not allocated_objects:
+        return False, "GC stats: allocated objects not found found", path
+    freed_objects = re.search(r'\[GC\]\s*Freed objects: (\d+)', output)
+    if not freed_objects:
+        return False, "GC stats: freed objects not found found", path
+    if int(allocated_objects.group(1)) != int(freed_objects.group(1)):
+        return False, "GC stats: allocated and freed objects do not match", path
+
     return True, "(Success)", path
 
 def pool_helper(args):
