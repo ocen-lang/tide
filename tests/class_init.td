@@ -1,15 +1,15 @@
 /// out: Person: John 30 JohnJohnJohn
 
 class Person {
-    def init(name, age) {
+    def init(this, name, age) {
         .name = name
         .age = age
     }
 
-    def print() {
+    def print(this) {
         print("Person: " + .name, .age)
     }
-    def bar() => .name + .name + .name
+    def bar(this) => .name + .name + .name
 }
 
 

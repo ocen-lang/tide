@@ -166,7 +166,12 @@ def VM::add(&this, a: Value, b: Value): Value => if {
         //        allocate the new one (which can trigger a GC collection)
         .tmp.push(a)
         .tmp.push(b)
-        let res = .take_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
+        let s = mem::alloc<char>(a_str.len + b_str.len + 1)
+        import std::libc::memcpy
+        memcpy(s            , a_str.data, a_str.len)
+        memcpy(s + a_str.len, b_str.data, b_str.len)
+        s[a_str.len + b_str.len] = '\0'
+        let res = .take_string(s, a_str.len + b_str.len)
         .tmp.pop() // b
         .tmp.pop() // a
         yield res
@@ -407,7 +412,7 @@ def VM::bind_method(&this, instance: Value, func: &Function) {
     .stack.push(Value::Object(&bound.obj))
 }
 
-def VM::call(&this, arity: u32, func: &Function) {
+def VM::call_function(&this, arity: u32, func: &Function) {
     if func.code.arity as u32 != arity {
         .error(f"Function {func.code.name.data} expected {func.code.arity} arguments, got {arity}")
     }
@@ -417,13 +422,58 @@ def VM::call(&this, arity: u32, func: &Function) {
     .tmp.pop()
 }
 
+def VM::call_value(&this, arity: u32, val: Value) {
+    if not val.is_obj() {
+        .error(f"Can't call object of type {val.type_str()}")
+    }
+
+    match val.as_obj().type {
+        Function => .call_function(arity, val.as_function())
+        NativeFunction => {
+            let func = val.as_native_function()
+            let res = func.func(this, arity, &.stack.data[.stack.size - arity])
+            .stack.size -= arity as u32 + 1  // Pop the arguments and the function
+            .stack.push(res)
+        }
+        Class => {
+            let class = val.as_class()
+            let instance = gc::allocate_object<Instance>(ObjectType::Instance, this)
+            let val = Value::Object(&instance.obj)
+            instance.fields = null
+
+            // instance.init allocates memory, so we need to push this on the stack
+            // so the GC can find it if we collect
+            .stack.push(val)
+            instance.init(class)
+            .stack.pop()
+
+            .stack.data[.stack.size - arity - 1] = val
+
+            let init_it = class.methods.get_item(.init_string)
+            if init_it? {
+                .call_function(arity, init_it.value)
+
+            } else if arity != 0 {
+                .error(f"Can't provide arguments to class without init()")
+            }
+        }
+        Method => {
+            let method = val.as_method()
+            .stack.data[.stack.size - arity - 1] = method.this_val
+            .call_function(arity, method.func)
+        }
+        FunctionCode => .error("Function should have been a func")
+        else => .error(f"Can't call object of type {val.type_str()}")
+    }
+}
+
 def VM::main_loop(&this): i32 {
     while true {
         // FIXME: For `tests/native_fn.td`, having this line here
         //        causes perf to go from 1.2s -> 1.6s, _even if_
         //        the debug == false. Saving it into a local variable
         //        from the global one doesn't help either.
-        if debug then .debug_dump_inst(print_stack: true)
+        // if debug then .debug_dump_inst(print_stack: true)
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
@@ -518,49 +568,7 @@ def VM::main_loop(&this): i32 {
             Call => {
                 let arity = .read_u8() as u32
                 let val = .stack.back(arity as u32)
-
-                if not val.is_obj() {
-                    .error(f"Can't call object of type {val.type_str()}")
-                }
-
-                match val.as_obj().type {
-                    Function => .call(arity, val.as_function())
-                    NativeFunction => {
-                        let func = val.as_native_function()
-                        let res = func.func(this, arity, &.stack.data[.stack.size - arity])
-                        .stack.size -= arity as u32 + 1  // Pop the arguments and the function
-                        .stack.push(res)
-                    }
-                    Class => {
-                        let class = val.as_class()
-                        let instance = gc::allocate_object<Instance>(ObjectType::Instance, this)
-                        let val = Value::Object(&instance.obj)
-                        instance.fields = null
-
-                        // instance.init allocates memory, so we need to push this on the stack
-                        // so the GC can find it if we collect
-                        .stack.push(val)
-                        instance.init(class)
-                        .stack.pop()
-
-                        .stack.data[.stack.size - arity - 1] = val
-
-                        let init_it = class.methods.get_item(.init_string)
-                        if init_it? {
-                            .call(arity, init_it.value)
-
-                        } else if arity != 0 {
-                            .error(f"Can't provide arguments to class without init()")
-                        }
-                    }
-                    Method => {
-                        let method = val.as_method()
-                        .stack.data[.stack.size - arity - 1] = method.this_val
-                        .call(arity, method.func)
-                    }
-                    FunctionCode => .error("Function should have been a func")
-                    else => .error(f"Can't call object of type {val.type_str()}")
-                }
+                .call_value(arity, val)
             }
             GetGlobal => {
                 let name = .read_literal().as_string()
@@ -616,6 +624,31 @@ def VM::main_loop(&this): i32 {
                 }
 
                 .error(f"Member {name.data} not found")
+            }
+            Invoke => {
+                let name = .read_literal().as_string()
+                let arity = .read_u8() as u32
+
+                let obj = .stack.back(arity)
+                if not obj.is_instance() {
+                    .error(f"Can't access a field/member on object of type {obj.type_str()}")
+                }
+                let instance = obj.as_instance()
+                let func = instance.class.methods.get(name, null)
+                if func? {
+                    // NOTE: the instance is already on the stack in the
+                    //       correct position to bind `this`, so we don't
+                    //       need to do anything here.
+                    .call_function(arity, func)
+
+                } else {
+                    let it = instance.fields.get_item(name)
+                    if not it? {
+                        .error(f"Could not find field/method with name {name}")
+                    }
+                    .call_value(arity, it.value)
+                }
+
             }
             Null => .stack.push(Value::Null())
             True => .stack.push(Value::True())

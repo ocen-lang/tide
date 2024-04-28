@@ -1,8 +1,8 @@
 /// out: <instance Foo> 5 8
 
 class Foo {
-    def bar() => .x = 5
-    def test(a, b) => .x + a + b
+    def bar(this) => .x = 5
+    def test(this, a, b) => .x + a + b
 }
 
 let f = Foo()

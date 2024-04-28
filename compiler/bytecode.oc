@@ -38,6 +38,7 @@ enum OpCode {
     SetMember
     GetMember
     Method
+    Invoke
 }
 
 struct DebugLocRun {
@@ -173,7 +174,7 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
         LessThan => println("LessThan")
         GreaterThan => println("GreaterThan")
         Equal => println("Equal")
-        SetMember | GetMember | Class | GetGlobal | SetGlobal | Method  => {
+        SetMember | GetMember | Class | GetGlobal | SetGlobal | Method | Invoke  => {
             let name = .read_literal(&off).as_obj() as &String
             println(f"{op} {name.data}")
         }

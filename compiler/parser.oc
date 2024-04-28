@@ -1197,6 +1197,7 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
     let start = .consume(Def)
 
     let name = .consume(Identifier)
+    let expect_this_arg = (type == Method)
 
     if type == Method and name.text == "init" {
         type = Constructor
@@ -1210,17 +1211,26 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
     .add_doc_comment(func.sym, start)
 
     .consume(OpenParen)
+    let found_this_arg = false
     while not .token_is(CloseParen) {
         let var_name = .consume(Identifier)
-
-        let var = Variable::new()
-        var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
-        func.params.push(var)
-        .add_doc_comment(var.sym, var_name)
+        if func.params.size == 0 and var_name.text == "this" {
+            // Don't actually need to add `this` to the params list, since
+            // we special-case this when binding methods.
+            found_this_arg = true
+        } else {
+            let var = Variable::new()
+            var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
+            func.params.push(var)
+            .add_doc_comment(var.sym, var_name)
+        }
 
         if not .token_is(CloseParen) {
             .consume(Comma)
         }
+    }
+    if expect_this_arg and not found_this_arg {
+        .error(Error::new(func.sym.span, "Method must have a `this` as first argument"))
     }
     let end_span = .consume(CloseParen).span
 
