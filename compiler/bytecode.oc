@@ -35,6 +35,9 @@ enum OpCode {
     GetUpvalue
     CloseUpvalue
     Class
+    SetMember
+    GetMember
+    Method
 }
 
 struct DebugLocRun {
@@ -170,9 +173,9 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
         LessThan => println("LessThan")
         GreaterThan => println("GreaterThan")
         Equal => println("Equal")
-        Class => {
+        SetMember | GetMember | Class | GetGlobal | SetGlobal | Method  => {
             let name = .read_literal(&off).as_obj() as &String
-            println(f"Class {name.data}")
+            println(f"{op} {name.data}")
         }
         Loop => {
             let arg = .read_u16(&off)
@@ -188,10 +191,6 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
         }
         Return => println("Return")
         Call => println(f"Call {.read_u8(&off)}")
-        GetGlobal | SetGlobal => {
-            let val = .read_literal(&off).as_obj() as &String
-            println(f"{op}: {val.data}")
-        }
         GetLocal | SetLocal | SetUpvalue | GetUpvalue => {
             let idx = .read_u16(&off)
             println(f"{op}: {idx}")

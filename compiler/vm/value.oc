@@ -82,6 +82,9 @@ def Value::as_instance(this): &Instance => .as_obj() as &Instance
 def Value::is_function(this): bool => .is_obj_type(Function)
 def Value::as_function(this): &Function => .as_obj() as &Function
 
+def Value::is_method(this): bool => .is_obj_type(Method)
+def Value::as_method(this): &Method => .as_obj() as &Method
+
 def Value::Float(f: f64): Value => Value::from_float(f)
 def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
 def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
@@ -108,6 +111,7 @@ def Value::type_str(this): str => if {
             UpValue => "upvalue"
             Class => "class"
             Instance => "instance"
+            Method => "method"
         }
     }
     else => "<unknown>"
@@ -131,6 +135,7 @@ enum ObjectType {
     UpValue
     Class
     Instance
+    Method
 
     //! Representing the function code itself, not a closure
     FunctionCode
@@ -184,6 +189,10 @@ def Object::print(&this) {
         Instance => {
             let i = this as &Instance
             print(f"<instance {i.class.name.data}>")
+        }
+        Method => {
+            let m = this as &Method
+            print(f"<method {m.func.code.name.data}>")
         }
     }
 }
@@ -263,6 +272,12 @@ def NativeFunction::init(&this, name: &String, func: NativeFunctionType) {
 struct Class {
     obj: Object
     name: &String
+    methods: &Map<&String, &Function>
+}
+
+def Class::init(&this, name: &String) {
+    .name = name
+    .methods = Map<&String, &Function>::new()
 }
 
 struct Instance {
@@ -274,4 +289,15 @@ struct Instance {
 def Instance::init(&this, class: &Class) {
     .class = class
     .fields = Map<&String, Value>::new()
+}
+
+struct Method {
+    obj: Object
+    this_val: Value
+    func: &Function
+}
+
+def Method::init(&this, this_val: Value, func: &Function) {
+    .this_val = this_val
+    .func = func
 }

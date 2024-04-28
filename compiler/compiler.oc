@@ -2,7 +2,7 @@ import std::vector::{ Vector }
 import std::span::{ Span }
 import std::sv::{ SV }
 
-import @ast::nodes::{ AST, Variable, Symbol }
+import @ast::nodes::{ this, AST, Variable, Symbol }
 import @errors::{ Error }
 import @bytecode::{ Chunk, OpCode  }
 import @vm::{ VM }
@@ -10,7 +10,8 @@ import @vm::gc
 import @vm::value::{ Value, String, FunctionCode, Class }
 
 struct LocalVar {
-    sym: &Symbol
+    name: SV
+    span: Span
     depth: i32
     captured: bool
 }
@@ -30,9 +31,19 @@ struct Compiler {
     enclosing: &Compiler
 }
 
-def Compiler::make(vm: &VM, name: SV, span: Span, enclosing: &Compiler = null): Compiler {
+enum CompileType {
+    Script
+    Function
+    Method
+}
+
+def Compiler::make(
+    vm: &VM, name: SV, span: Span,
+    type: CompileType,
+    enclosing: &Compiler = null
+): Compiler {
     let chunk = Chunk::new(span)
-    let locals = Vector<LocalVar>::new()
+    let locals = Vector<LocalVar>::new(capacity: 8)
     let upvars = Vector<UpVar>::new(capacity: 256)
     let func = gc::allocate_object<FunctionCode>(FunctionCode, vm, enclosing)
 
@@ -47,10 +58,15 @@ def Compiler::make(vm: &VM, name: SV, span: Span, enclosing: &Compiler = null): 
     )
     gc::set_compiler(&compiler)
 
-    // NOTE: We pass in the compiler here so the GC can find the function object
-    //       and not delete it immediately :)
     let name_val = vm.copy_string(name.data, name.len)
     func.init(name_val.as_string(), chunk, 0) // Replace arity later...
+
+    if type == Method {
+        locals.push(LocalVar(SV("this",4), span, 0, false))
+    } else {
+        locals.push(LocalVar(SV("",0), span, 0, false))
+    }
+
     return compiler
 }
 
@@ -80,7 +96,7 @@ def Compiler::find_local(&this, name: SV, span: Span): i32 {
     for let i = 0; i < .locals.size; i++ {
         let idx = .locals.size - i - 1
         let local = .locals[idx]
-        if local.sym.name == name {
+        if local.name == name {
             if idx < 0 {
                 Error::new(
                     span, "Compiler: Variable used before initialization."
@@ -139,7 +155,7 @@ def Compiler::create_variable(&this, sym: &Symbol) {
     }
 
     // Local variable
-    let local_var = LocalVar(sym, -1, false) // Uninitialized...
+    let local_var = LocalVar(sym.name, sym.span, -1, false) // Uninitialized...
     .locals.push(local_var)
 }
 
@@ -166,6 +182,7 @@ def Compiler::define_variable(&this, sym: &Symbol) {
     .chunk.push_op(Pop, sym.span)
 }
 
+//! Get the value of the named variable, and push it to the stack.
 def Compiler::compile_variable(&this, name: SV, span: Span) {
     let local_idx = .find_local(name, span)
     if local_idx >= 0 {
@@ -263,6 +280,12 @@ def Compiler::compile_expression(&this, node: &AST) {
 
             .chunk.push_with_arg_u8(Call, args.size as u8, node.span)
         }
+        Member => {
+            let member = node.u.member
+            .compile_expression(member.lhs)
+            let name = .make_str(member.rhs_name)
+            .chunk.push_with_literal(.vm, GetMember, name, node.span)
+        }
         BinaryOp => match node.u.binary.op {
             Assignment => {
                 .compile_expression(node.u.binary.rhs)
@@ -286,6 +309,13 @@ def Compiler::compile_expression(&this, node: &AST) {
                             .chunk.push_with_literal(.vm, SetGlobal, .make_str(name), node.span)
 
                         }
+                    }
+                    Member => {
+                        let member = lhs.u.member
+                        .compile_expression(member.lhs)
+
+                        let name = .make_str(member.rhs_name)
+                        .chunk.push_with_literal(.vm, SetMember, name, node.span)
                     }
                     else => {
                         Error::new(
@@ -334,6 +364,43 @@ def Compiler::compile_expression(&this, node: &AST) {
     }
 }
 
+def Compiler::compile_function(&this, node: &AST, func: &nodes::Function) {
+    let compile_type: CompileType = if func.is_method then Method else Function
+    let cc = Compiler::make(
+        .vm,
+        func.sym.name,
+        func.sym.span,
+        compile_type,
+        enclosing: this
+    )
+    cc.func.arity = func.params.size as u8
+
+    cc.begin_scope()
+    for param in func.params.iter() {
+        cc.create_variable(param.sym)
+        cc.mark_variable_initialized()
+    }
+
+    cc.compile_statement(func.body)
+
+    // Add a placeholder return statement if none was provided
+    cc.chunk.push_with_literal(.vm, Constant, Value::Null(), node.span)
+    cc.chunk.push_op(Return, node.span)
+    cc.end_scope(func.sym.span)
+
+    let func_val = Value::Object(&cc.func.obj)
+    .chunk.push_with_literal(.vm, Constant, func_val, node.span)
+
+    .chunk.push_with_arg_u16(CloseFunction, cc.upvars.size as u16, node.span)
+    for up in cc.upvars.iter() {
+        .chunk.push_u8(up.is_local as u8, node.span)
+        .chunk.push_u16(up.idx, node.span)
+    }
+
+    gc::set_compiler(this)
+    cc.free()
+}
+
 def Compiler::compile_statement(&this, node: &AST) {
     match node.type {
         Block => {
@@ -363,35 +430,9 @@ def Compiler::compile_statement(&this, node: &AST) {
             .create_variable(ast_func.sym)
             .mark_variable_initialized()
 
-            let cc = Compiler::make(.vm, ast_func.sym.name, ast_func.sym.span, enclosing: this)
-            cc.func.arity = ast_func.params.size as u8
-
-            cc.begin_scope()
-            for param in ast_func.params.iter() {
-                cc.create_variable(param.sym)
-                cc.mark_variable_initialized()
-            }
-
-            cc.compile_statement(ast_func.body)
-
-            // Add a placeholder return statement if none was provided
-            cc.chunk.push_with_literal(.vm, Constant, Value::Null(), node.span)
-            cc.chunk.push_op(Return, node.span)
-            cc.end_scope(ast_func.sym.span)
-
-            let func_val = Value::Object(&cc.func.obj)
-            .chunk.push_with_literal(.vm, Constant, func_val, node.span)
-
-            .chunk.push_with_arg_u16(CloseFunction, cc.upvars.size as u16, node.span)
-            for up in cc.upvars.iter() {
-                .chunk.push_u8(up.is_local as u8, node.span)
-                .chunk.push_u16(up.idx, node.span)
-            }
+            .compile_function(node, ast_func)
 
             .define_variable(ast_func.sym)
-
-            gc::set_compiler(this)
-            cc.free()
         }
         Class => {
             let class = node.u.class
@@ -400,6 +441,16 @@ def Compiler::compile_statement(&this, node: &AST) {
             .create_variable(sym)
             .chunk.push_with_literal(.vm, Class, name, sym.span)
             .define_variable(sym)
+
+            // Re-get the class object
+            .compile_variable(sym.name, sym.span)
+
+            for method_ast in class.methods.iter() {
+                let method = method_ast.u.func
+                .compile_function(method_ast, method)
+                let method_name = .make_str(method.sym.name)
+                .chunk.push_with_literal(.vm, Method, method_name, method.sym.span)
+            }
         }
         If => .compile_if(node, is_expression: false)
         While => {
@@ -469,11 +520,10 @@ def Compiler::compile_ns(&this, root: &AST) {
 
 // TODO: More complex structures than just expressions?
 def compile_program(vm: &VM, root: &AST): &FunctionCode {
-    let compiler = Compiler::make(vm, SV("",0), root.span)
+    let compiler = Compiler::make(vm, SV("",0), root.span, Script)
     compiler.compile_ns(root)
     compiler.chunk.push_op(Halt, root.span)
     gc::set_compiler(null)
     compiler.free()
     return compiler.func
 }
- 

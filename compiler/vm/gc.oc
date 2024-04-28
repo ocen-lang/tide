@@ -3,7 +3,7 @@ import std::mem
 import .value::{
     Value, Object, ObjectType, String, Function,
     FunctionCode, NativeFunction, UpValue, Class,
-    Instance
+    Instance, Method
 }
 import ..compiler::{ Compiler }
 import .{ VM, ValueCompareString }
@@ -124,7 +124,12 @@ def free_object(obj: &Object, vm: &VM) {
             let i = obj as &Instance
             i.fields.free()
         }
-        NativeFunction | UpValue | Class => {}
+        NativeFunction | UpValue | Method => {}
+        Class => {
+            let c = obj as &Class
+            // NOTE: We free the list, but not the objects themselves.
+            c.methods.free()
+        }
     }
 
     mem::free(obj)
@@ -207,6 +212,15 @@ def GarbageCollector::blacken_object(&this, obj: &Object) {
         Class => {
             let c = obj as &Class
             .mark_object(&c.name.obj)
+            for it in c.methods.items.iter() {
+                .mark_object(&it.key.obj)
+                .mark_object(&it.value.obj)
+            }
+        }
+        Method => {
+            let m = obj as &Method
+            .mark_value(m.this_val)
+            .mark_object(&m.func.obj)
         }
         Instance => {
             let i = obj as &Instance

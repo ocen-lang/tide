@@ -94,6 +94,11 @@ def Parser::token_is(&this, type: TokenType): bool {
     return .token().type == type
 }
 
+def Parser::token_is_eof_or(&this, type: TokenType): bool {
+    if .token_is(EOF) return true
+    return .token_is(type)
+}
+
 def Parser::token_is_identifier(&this, name: str): bool => .token().is_identifier(name)
 
 def Parser::peek_token_is(&this, off: u32, type: TokenType): bool {
@@ -517,7 +522,7 @@ def Parser::parse_atom(&this, end_type: TokenType): &AST {
         }
         Dot => {
             let tok = .consume(Dot)
-            if not .cur_func? or not .cur_func.is_method or .cur_func.is_static {
+            if not .cur_func? or not .cur_func.is_method {
                 .error(Error::new(tok.span, "Cannot use dot shorthand outside of a method"))
                 return AST::new(Error, tok.span)
             }
@@ -991,17 +996,24 @@ def Parser::parse_class(&this): &AST {
     let start = .consume(Class)
     let name = .consume(Identifier)
 
+    let node = AST::new(Class, name.span)
+    let sym = Symbol::new_with_parent(.ns.sym, name.text, name.span)
+    node.u.class = Class::new(sym)
+
     if not .consume_if(OpenCurly) {
         .error(Error::new(.token().span, "Expected '{'"))
     }
+
+    while not .token_is_eof_or(CloseCurly) {
+        let method = .parse_function(is_method: true)
+        if method? node.u.class.methods.push(method)
+    }
+
     if not .token_is(CloseCurly) {
         .error(Error::new(.token().span, "Expected '}'"))
     }
 
     let end = .consume(CloseCurly)
-    let node = AST::new(Class, start.span.join(end.span))
-    let sym = Symbol::new_with_parent(.ns.sym, name.text, name.span)
-    node.u.class.sym = sym
     return node
 }
 
@@ -1040,7 +1052,7 @@ def Parser::parse_statement(&this): &AST {
 
     match .token().type {
         OpenCurly => node = .parse_block()
-        Def => node = .parse_function()
+        Def => node = .parse_function(is_method: false)
         Class => node = .parse_class()
         Return => {
             .consume(Return)
@@ -1157,105 +1169,8 @@ def Parser::add_doc_comment(&this, sym: &Symbol, token: Token) {
     }
 }
 
-def Parser::parse_function(&this): &AST {
-    let start = .consume(Def)
-
-    let is_method = false
-    let is_static = true
-
-    let ident = .parse_scoped_identifier()
-    if not ident? return null
-
-    let name_span = ident.span
-
-    let func = Function::new()
-    let node = AST::new(Function, start.span.join(ident.span))
-    node.u.func = func
-
-    let name = match ident.type {
-        Identifier => ident.u.ident.name
-        NSLookup => {
-            // TODO: How do we attach this to the class?
-            is_method = true
-            yield ident.u.lookup.rhs_name
-        }
-        else => {
-            .error(Error::new(ident.span, "Expected identifier"))
-            yield SV::from_str("<error>")
-        }
-    }
-
-    func.sym = Symbol::new_with_parent(.ns.sym, name, name_span)
-    .add_doc_comment(func.sym, start)
-
-    .consume(OpenParen)
-    let seen_default = false
-    while not .token_is(CloseParen) {
-
-        let found_amp = .consume_if(Ampersand)
-        let var_name = .consume(Identifier)
-        if func.params.is_empty() and is_method {
-            if var_name.text.data.eq("this") {
-                // TODO: Handle
-                // type = parent_type
-                // if found_amp {
-                //     type = Type::new_resolved(BaseType::Pointer, parent_type.span)
-                //     type.u.ptr = parent_type
-                // }
-                is_static = false
-            } else if found_amp {
-                .error(Error::new(var_name.span, "Expected 'this' over here"))
-            }
-        }
-
-        let default_value = null as &AST
-        if .consume_if(Equals) {
-            default_value = .parse_expression(end_type: Comma)
-            seen_default = true
-
-        } else if seen_default {
-            .error(Error::new(var_name.span, "Cannot have non-default parameters after default parameters"))
-        }
-
-        let var = Variable::new()
-        var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
-        var.default_value = default_value
-        func.params.push(var)
-
-        .add_doc_comment(var.sym, var_name)
-
-        if not .token_is(CloseParen) {
-            .consume(Comma)
-        }
-    }
-    let end_span = .consume(CloseParen).span
-
-
-    func.is_method = is_method
-
-    func.is_static = is_static
-
-    for attr : .attrs.iter() {
-        match attr.type {
-            Exits => func.exits = true
-            Operator => {
-                let op = Operator::from_operator_overload_str(attr.args.at(0))
-                if op == Error {
-                    .error(Error::new(attr.span, "Invalid operator"))
-                    continue
-                }
-                if not func.operator_overloads? {
-                    func.operator_overloads = Vector<Operator>::new()
-                }
-                func.operator_overloads.push(op)
-            }
-            else => .error(Error::new(attr.span, f"Invalid attribute for function: {attr.type}"))
-        }
-    }
-
-    .cur_func = func
-
-    if .token_is(FatArrow) {
+def Parser::parse_function_body(&this): &AST => match .token().type {
+    FatArrow => {
         let arrow = .consume(FatArrow)
 
         if .token_is(OpenCurly) {
@@ -1273,11 +1188,45 @@ def Parser::parse_function(&this): &AST {
         statements.push(ret)
         body.u.block.statements = statements
 
-        func.body = body
-
-    } else {
-        func.body = .parse_block()
+        yield body
     }
+    else => .parse_block()
+}
+
+def Parser::parse_function(&this, is_method: bool): &AST {
+    let start = .consume(Def)
+
+    let name = .consume(Identifier)
+
+    let func = Function::new()
+    let node = AST::new(Function, start.span.join(name.span))
+    node.u.func = func
+
+    func.sym = Symbol::new_with_parent(.ns.sym, name.text, name.span)
+    .add_doc_comment(func.sym, start)
+
+    .consume(OpenParen)
+    while not .token_is(CloseParen) {
+        let var_name = .consume(Identifier)
+
+        let var = Variable::new()
+        var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
+        func.params.push(var)
+        .add_doc_comment(var.sym, var_name)
+
+        if not .token_is(CloseParen) {
+            .consume(Comma)
+        }
+    }
+    let end_span = .consume(CloseParen).span
+
+    func.is_method = is_method
+    .cur_func = func
+
+    let body = .parse_function_body()
+    if not body? return null
+
+    func.body = body
 
     .cur_func = null
     func.span = start.span.join(func.body.span)

@@ -13,7 +13,7 @@ import .gc
 import .value::{
     Value, String, Object, ObjectType,
     NativeFunctionType, NativeFunction, FunctionCode,
-    UpValue, Function, Class, Instance
+    UpValue, Function, Class, Instance, Method
 }
 import .native
 
@@ -248,6 +248,10 @@ def VM::print_value(&this, val: Value) => if {
             let name = val.as_instance().class.name
             print(f"<instance {name.data}>")
         }
+        Method => {
+            let method = val.as_method()
+            print(f"<method {method.func.code.name.data}>")
+        }
     }
     else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
 }
@@ -283,6 +287,7 @@ def VM::setup_native_functions(&this) {
 
 def VM::run(&this, code: &FunctionCode): i32 {
     .stack.push(Value::Object(&code.obj))
+
     let func = .make_function(code)
     .stack.pop()
     .stack.push(Value::Object(&func.obj))
@@ -290,7 +295,7 @@ def VM::run(&this, code: &FunctionCode): i32 {
     .func = func
     .chunk = code.chunk
     .ip = .chunk.code.data
-    .stack_base = .stack.size
+    .stack_base = 0
 
     .setup_native_functions()
     return .main_loop()
@@ -315,7 +320,7 @@ def VM::push_frame(&this, func: &Function, stack_base: u32) {
 
 def VM::pop_frame(&this) {
     // Discard all the stack variables...
-    .stack.size = .stack_base - 1
+    .stack.size = .stack_base
 
     let frame = .frames.pop()
     .func = frame.func
@@ -338,7 +343,7 @@ def VM::error(&this, msg: str) {
 
 def VM::debug_dump_inst(&this, print_stack: bool) {
     if print_stack {
-        print("\nStack: ()")
+        print(f"\nStack (base {.stack_base}): ()")
         for let i = 1; i < .stack.size; i++ {
             let val = .stack[i]
             if i > 0 then print(" ")
@@ -380,13 +385,21 @@ def VM::close_upvalue(&this, slot: u32) {
     }
 }
 
+def VM::bind_method(&this, instance: Value, func: &Function) {
+    let bound = gc::allocate_object<Method>(ObjectType::Method, this)
+    bound.init(instance, func)
+
+    .stack.pop()  // Pop the instance
+    .stack.push(Value::Object(&bound.obj))
+}
+
 def VM::main_loop(&this): i32 {
     while true {
         // FIXME: For `tests/native_fn.td`, having this line here
         //        causes perf to go from 1.2s -> 1.6s, _even if_
         //        the debug == false. Saving it into a local variable
         //        from the global one doesn't help either.
-        // if debug then .debug_dump_inst(print_stack: true)
+        if debug then .debug_dump_inst(print_stack: true)
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
@@ -463,36 +476,62 @@ def VM::main_loop(&this): i32 {
             Class => {
                 let name = .read_literal().as_string()
                 let class = gc::allocate_object<Class>(ObjectType::Class, this)
-                class.name = name
+                class.init(name)
                 .stack.push(Value::Object(&class.obj))
+            }
+            Method => {
+                let val = .stack.back(0)
+                let class = .stack.back(1).as_class()
+
+                let name = .read_literal().as_string()
+                if not val.is_function() {
+                    .error(f"Method must be a function, got {val.type_str()}")
+                }
+                class.methods[name] = val.as_function()
+
+                .stack.pop()
             }
             Call => {
                 let arity = .read_u8() as u32
                 let val = .stack.back(arity as u32)
 
-                if {
-                    val.is_function() => {
+                if not val.is_obj() {
+                    .error(f"Can't call object of type {val.type_str()}")
+                }
+
+                match val.as_obj().type {
+                    Function => {
                         let func = val.as_function()
                         let code = func.code
                         if code.arity as u32 != arity {
                             .error(f"Function {code.name.data} expected {code.arity} arguments, got {arity}")
                         }
-                        .push_frame(func, .stack.size - arity)
+                        .push_frame(func, .stack.size - arity - 1)
                     }
-                    val.is_native_function() => {
+                    NativeFunction => {
                         let func = val.as_native_function()
                         let res = func.func(this, arity, &.stack.data[.stack.size - arity])
                         .stack.size -= arity as u32 + 1  // Pop the arguments and the function
                         .stack.push(res)
                     }
-                    val.is_function_code() => .error("Function should have been a func")
-                    val.is_class() => {
+                    Class => {
                         let class = val.as_class()
                         let instance = gc::allocate_object<Instance>(ObjectType::Instance, this)
                         instance.init(class)
                         .stack.data[.stack.size - arity - 1] = Value::Object(&instance.obj)
                     }
-                    else => .error(f"Can only call functions, got {val.type_str()}")
+                    Method => {
+                        let method = val.as_method()
+                        let func = method.func
+                        let code = func.code
+                        if code.arity as u32 != arity {
+                            .error(f"Function {code.name.data} expected {code.arity} arguments, got {arity}")
+                        }
+                        .stack.data[.stack.size - arity - 1] = method.this_val
+                        .push_frame(func, .stack.size - arity - 1)
+                    }
+                    FunctionCode => .error("Function should have been a func")
+                    else => .error(f"Can't call object of type {val.type_str()}")
                 }
             }
             GetGlobal => {
@@ -515,6 +554,40 @@ def VM::main_loop(&this): i32 {
             SetLocal => {
                 let idx = .read_u16() + .stack_base as u16
                 .stack.data[idx] = .stack.back()
+            }
+            SetMember => {
+                let name = .read_literal().as_string()
+                let obj = .stack.back(0)
+                let value = .stack.back(1)
+                if not obj.is_instance() {
+                    .error(f"Can only set members on instances, got {obj.type_str()}")
+                }
+                let instance = obj.as_instance()
+                instance.fields[name] = value
+
+                .stack.pop()
+            }
+            GetMember => {
+                let name = .read_literal().as_string()
+                let obj = .stack.back()
+                if not obj.is_instance() {
+                    .error(f"Can only get members on instances, got {obj.type_str()}")
+                }
+                let instance = obj.as_instance()
+                let it = instance.fields.get_item(name)
+                if it? {
+                    .stack.pop()  // Pop the instance
+                    .stack.push(it.value)
+                    continue
+                }
+
+                let method_it = instance.class.methods.get_item(name)
+                if method_it? {
+                    .bind_method(obj, method_it.value)
+                    continue
+                }
+
+                .error(f"Member {name.data} not found")
             }
             Null => .stack.push(Value::Null())
             True => .stack.push(Value::True())

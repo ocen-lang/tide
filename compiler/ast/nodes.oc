@@ -69,10 +69,13 @@ struct VarDeclaration {
 
 struct Class {
     sym: &Symbol
+    methods: &Vector<&AST>
 }
 
-def Class::new(): &Class {
+def Class::new(sym: &Symbol): &Class {
     let struc = mem::alloc<Class>()
+    struc.sym = sym
+    struc.methods = Vector<&AST>::new()
     return struc
 }
 
@@ -231,9 +234,7 @@ struct Function {
     span: Span
 
     operator_overloads: &Vector<Operator>
-
     is_method: bool
-    is_static: bool
 }
 
 def Function::new(): &Function {
@@ -483,7 +484,7 @@ union ASTUnion {
     array_literal: ArrayLiteral
     child: &AST
     func: &Function
-    class: Class
+    class: &Class
     enom: &Enum
     ns: &Namespace
 }
