@@ -20,6 +20,7 @@ import .native
 //! Wrapper around a string that forces comparison by value, not
 //! just by a pointer (like for the interned strings we use in
 //! the rest of the language).
+[formatting "%.*s" "$.len,$.data"]
 struct ValueCompareString {
     data: str
     len: u32
@@ -54,16 +55,22 @@ struct VM {
     stack: &Vector<Value>
     globals: &Map<&String, Value>
     strings: &Map<ValueCompareString, Value>
-    open_upvalues: &UpValue  // Linked list of open upvalues
+    init_string: &String
 
+    //! Linked list of open upvalues
+    open_upvalues: &UpValue
     //! Linked list of all allocated objects
     objects: &Object
     //! Used for GC tracking
     grays: &Vector<&Object>
+
+    //! Temp area to hold objects while we are processing
+    //! stuff, so the GC can see them.
+    tmp: &Vector<Value>
 }
 
 def VM::make(): VM {
-    return VM(
+    let vm = VM(
         frames: Vector<CallFrame>::new(),
         func: null,
         chunk: null,
@@ -73,10 +80,14 @@ def VM::make(): VM {
         stack: Vector<Value>::new(capacity: 256),
         globals: Map<&String, Value>::new(),
         strings: Map<ValueCompareString, Value>::new(),
+        init_string: null,
         open_upvalues: null,
         objects: null,
-        grays: Vector<&Object>::new()
+        grays: Vector<&Object>::new(),
+        tmp: Vector<Value>::new(capacity: 16)
     )
+    vm.init_string = vm.copy_string("init", 4).as_string()
+    return vm
 }
 
 def VM::free(&this) {
@@ -85,6 +96,7 @@ def VM::free(&this) {
     .func = null
     .stack.clear()
     .globals.clear()
+    .init_string = null
 
     gc::collect_garbage(this, null)
 
@@ -93,7 +105,17 @@ def VM::free(&this) {
     .strings.free()
     .grays.free()
     .frames.free()
+    .tmp.free()
     log(Info, "VM freed")
+}
+
+def VM::intern_string(&this, s: &String): Value {
+    let candidate = ValueCompareString(s.data, s.len, s.shash)
+    let val = Value::Object(&s.obj)
+    .tmp.push(val)
+    .strings.insert(candidate, val)
+    .tmp.pop()
+    return val
 }
 
 def VM::take_string(&this, data: str, len: u32): Value {
@@ -105,9 +127,7 @@ def VM::take_string(&this, data: str, len: u32): Value {
     }
     let string = gc::allocate_object<String>(ObjectType::String, this)
     string.init(data, len, candidate.shash)
-    let value = Value::String(string)
-    .strings.insert(candidate, value)
-    return value
+    return .intern_string(string)
 }
 
 //! Takes in a pointer to compiler to mark any objects that are being held
@@ -120,17 +140,11 @@ def VM::copy_string(&this, data: str, len: u32): Value {
 
     let new_data = mem::alloc<char>(len+1) // +1 for null terminator, so we can print it
     std::libc::memcpy(new_data, data, len)
+    new_data[len] = '\0'
 
     let string = gc::allocate_object<String>(ObjectType::String, this)
     string.init(new_data, len, candidate.shash)
-    let value = Value::String(string)
-
-    // Push on the stack so GC can find it if we collect
-    .stack.push(value)
-    .strings.insert(candidate, value)
-    .stack.pop()
-
-    return value
+    return .intern_string(string)
 }
 
 def VM::make_function(&this, code: &FunctionCode): &Function {
@@ -150,11 +164,11 @@ def VM::add(&this, a: Value, b: Value): Value => if {
         // FIXME: Don't pop and push these back on, just peek the values earlier
         //        We need to do this so that the GC can find the strings when we
         //        allocate the new one (which can trigger a GC collection)
-        .stack.push(a)
-        .stack.push(b)
+        .tmp.push(a)
+        .tmp.push(b)
         let res = .take_string(`{a_str.data}{b_str.data}`, a_str.len + b_str.len)
-        .stack.pop() // b
-        .stack.pop() // a
+        .tmp.pop() // b
+        .tmp.pop() // a
         yield res
     }
     else => .error(f"Cant add {a.type_str()} and {b.type_str()}")
@@ -393,13 +407,23 @@ def VM::bind_method(&this, instance: Value, func: &Function) {
     .stack.push(Value::Object(&bound.obj))
 }
 
+def VM::call(&this, arity: u32, func: &Function) {
+    if func.code.arity as u32 != arity {
+        .error(f"Function {func.code.name.data} expected {func.code.arity} arguments, got {arity}")
+    }
+    let val = Value::Object(&func.obj)
+    .tmp.push(val)
+    .push_frame(func, .stack.size - arity - 1)
+    .tmp.pop()
+}
+
 def VM::main_loop(&this): i32 {
     while true {
         // FIXME: For `tests/native_fn.td`, having this line here
         //        causes perf to go from 1.2s -> 1.6s, _even if_
         //        the debug == false. Saving it into a local variable
         //        from the global one doesn't help either.
-        // if debug then .debug_dump_inst(print_stack: true)
+        if debug then .debug_dump_inst(print_stack: true)
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
@@ -500,14 +524,7 @@ def VM::main_loop(&this): i32 {
                 }
 
                 match val.as_obj().type {
-                    Function => {
-                        let func = val.as_function()
-                        let code = func.code
-                        if code.arity as u32 != arity {
-                            .error(f"Function {code.name.data} expected {code.arity} arguments, got {arity}")
-                        }
-                        .push_frame(func, .stack.size - arity - 1)
-                    }
+                    Function => .call(arity, val.as_function())
                     NativeFunction => {
                         let func = val.as_native_function()
                         let res = func.func(this, arity, &.stack.data[.stack.size - arity])
@@ -518,6 +535,7 @@ def VM::main_loop(&this): i32 {
                         let class = val.as_class()
                         let instance = gc::allocate_object<Instance>(ObjectType::Instance, this)
                         let val = Value::Object(&instance.obj)
+                        instance.fields = null
 
                         // instance.init allocates memory, so we need to push this on the stack
                         // so the GC can find it if we collect
@@ -526,16 +544,19 @@ def VM::main_loop(&this): i32 {
                         .stack.pop()
 
                         .stack.data[.stack.size - arity - 1] = val
+
+                        let init_it = class.methods.get_item(.init_string)
+                        if init_it? {
+                            .call(arity, init_it.value)
+
+                        } else if arity != 0 {
+                            .error(f"Can't provide arguments to class without init()")
+                        }
                     }
                     Method => {
                         let method = val.as_method()
-                        let func = method.func
-                        let code = func.code
-                        if code.arity as u32 != arity {
-                            .error(f"Function {code.name.data} expected {code.arity} arguments, got {arity}")
-                        }
                         .stack.data[.stack.size - arity - 1] = method.this_val
-                        .push_frame(func, .stack.size - arity - 1)
+                        .call(arity, method.func)
                     }
                     FunctionCode => .error("Function should have been a func")
                     else => .error(f"Can't call object of type {val.type_str()}")

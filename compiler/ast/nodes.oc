@@ -226,7 +226,15 @@ def Operator::needs_lhs_pointer_for_overload(this): bool => match this {
     else => false
 }
 
+enum FunctionType {
+    Script
+    Function
+    Method
+    Constructor
+}
+
 struct Function {
+    type: FunctionType
     sym: &Symbol
     params: &Vector<&Variable>
     body: &AST
@@ -234,11 +242,11 @@ struct Function {
     span: Span
 
     operator_overloads: &Vector<Operator>
-    is_method: bool
 }
 
-def Function::new(): &Function {
+def Function::new(type: FunctionType): &Function {
     let func = mem::alloc<Function>()
+    func.type = type
     func.params = Vector<&Variable>::new()
     return func
 }

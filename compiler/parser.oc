@@ -522,7 +522,7 @@ def Parser::parse_atom(&this, end_type: TokenType): &AST {
         }
         Dot => {
             let tok = .consume(Dot)
-            if not .cur_func? or not .cur_func.is_method {
+            if not .cur_func? or (.cur_func.type != Method and .cur_func.type != Constructor) {
                 .error(Error::new(tok.span, "Cannot use dot shorthand outside of a method"))
                 return AST::new(Error, tok.span)
             }
@@ -1005,7 +1005,7 @@ def Parser::parse_class(&this): &AST {
     }
 
     while not .token_is_eof_or(CloseCurly) {
-        let method = .parse_function(is_method: true)
+        let method = .parse_function(Method)
         if method? node.u.class.methods.push(method)
     }
 
@@ -1052,7 +1052,7 @@ def Parser::parse_statement(&this): &AST {
 
     match .token().type {
         OpenCurly => node = .parse_block()
-        Def => node = .parse_function(is_method: false)
+        Def => node = .parse_function(Function)
         Class => node = .parse_class()
         Return => {
             .consume(Return)
@@ -1193,12 +1193,16 @@ def Parser::parse_function_body(&this): &AST => match .token().type {
     else => .parse_block()
 }
 
-def Parser::parse_function(&this, is_method: bool): &AST {
+def Parser::parse_function(&this, type: FunctionType): &AST {
     let start = .consume(Def)
 
     let name = .consume(Identifier)
 
-    let func = Function::new()
+    if type == Method and name.text == "init" {
+        type = Constructor
+    }
+
+    let func = Function::new(type)
     let node = AST::new(Function, start.span.join(name.span))
     node.u.func = func
 
@@ -1220,7 +1224,6 @@ def Parser::parse_function(&this, is_method: bool): &AST {
     }
     let end_span = .consume(CloseParen).span
 
-    func.is_method = is_method
     .cur_func = func
 
     let body = .parse_function_body()

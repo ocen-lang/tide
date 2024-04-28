@@ -22,6 +22,7 @@ union ValueData {
 }
 
 //! NaN-boxed value
+[formatting "0x%08llx" "$.u.uint"]
 struct Value {
     u: ValueData
 }

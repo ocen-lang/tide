@@ -41,9 +41,9 @@ def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
     //   [ xxxxxxxx | ........ ........ ........ ........ ........  ]
     //     ^          ^
     // 8 byte size    Pointer to actual memory return from this function
-
     let old_base = if old? then old - 8 else null
     let old_size = if old? then *(old_base as &u64) else 0u64
+    if ALLOC_DEBUG then println(f"[GC MEM] Requested {new_size} bytes, old_ptr: {old}")
 
     if old_size < new_size as u64 and not state::paused {
         if bytes_allocated > next_gc or STRESS_GC {
@@ -55,15 +55,18 @@ def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
     // free
     if new_size == 0 {
         mem::impl::free(old_base)
-        if ALLOC_DEBUG then println(f"[GC] Deleted {old_size} bytes from {bytes_allocated} bytes allocated")
+        if ALLOC_DEBUG then println(f"[GC MEM] Deleted {old_size} bytes from {bytes_allocated} bytes allocated, {old}")
         bytes_allocated -= old_size as u64
         return null
     }
 
     // alloc / realloc
-    let new_base = mem::impl::realloc(old_base, new_size + 8)
+    let new_base = match old_size {
+        0 => mem::impl::calloc(1, new_size + 8),
+        else => mem::impl::realloc(old_base, new_size + 8)
+    }
     bytes_allocated += new_size as u64 - old_size as u64
-    if ALLOC_DEBUG then println(f"[GC] Reallocated {old_size} -> {new_size} bytes, total: {bytes_allocated} bytes allocated")
+    if ALLOC_DEBUG then println(f"[GC MEM] Reallocated {old_size} -> {new_size} bytes, total: {bytes_allocated} bytes allocated, res={new_base+8}")
     *(new_base as &u64) = new_size as u64
     return new_base + 8
 }
@@ -78,7 +81,7 @@ def initialize_gc_allocator() {
     if stress_gc? {
         STRESS_GC = true
     }
-    mem::set_allocator(null, gc_alloc, gc_free, gc_realloc)
+    mem::set_allocator(null, gc_alloc, gc_free)
 }
 
 /////
@@ -93,6 +96,7 @@ let num_garbage_collections: u32 = 0
 //!
 //! Precondition: First field of `T` must be a `Object` field.
 def allocate_object<T>(type: ObjectType, vm: &VM, compiler: &Compiler = null): &T {
+    if GC_DEBUG then println(f"[GC] Requesting allocation of object {type}")
     let res = mem::alloc<T>()
     res.obj.type = type
     res.obj.next = vm.objects
@@ -187,6 +191,10 @@ def GarbageCollector::mark_roots(&this) {
         .mark_value(value)
     }
 
+    for value in .vm.tmp.iter() {
+        .mark_value(value)
+    }
+
     .mark_object(&.vm.func.obj)
     for frame in .vm.frames.iter() {
         .mark_object(&frame.func.obj)
@@ -201,10 +209,13 @@ def GarbageCollector::mark_roots(&this) {
         .mark_value(it.value)
     }
 
+    .mark_object(&.vm.init_string.obj)
+
     .mark_compiler_roots()
 }
 
 def GarbageCollector::blacken_object(&this, obj: &Object) {
+    if not obj? return
     if GC_DEBUG {
         print(`[GC] Blackening object {obj} : `)
         obj.print()
@@ -225,7 +236,7 @@ def GarbageCollector::blacken_object(&this, obj: &Object) {
         Class => {
             let c = obj as &Class
             .mark_object(&c.name.obj)
-            if c.methods? {
+            if c.methods? and c.methods.items? {
                 for it in c.methods.items.iter() {
                     .mark_object(&it.key.obj)
                     .mark_object(&it.value.obj)
