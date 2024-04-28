@@ -1,6 +1,7 @@
 import std::vector::{ Vector }
 import std::span::{ Span }
 import std::sv::{ SV }
+import std::mem
 
 import @ast::nodes::{ this, AST, Variable, Symbol }
 import @errors::{ Error }
@@ -37,17 +38,19 @@ enum CompileType {
     Method
 }
 
-def Compiler::make(
+def Compiler::new(
     vm: &VM, name: SV, span: Span,
     type: CompileType,
     enclosing: &Compiler = null
-): Compiler {
+): &Compiler {
+    let compiler = mem::alloc<Compiler>()
+
     let chunk = Chunk::new(span)
     let locals = Vector<LocalVar>::new(capacity: 8)
     let upvars = Vector<UpVar>::new(capacity: 256)
     let func = gc::allocate_object<FunctionCode>(FunctionCode, vm, enclosing)
 
-    let compiler = Compiler(
+    *compiler = Compiler(
         vm,
         func,
         chunk,
@@ -56,7 +59,7 @@ def Compiler::make(
         scope_depth: 0,
         enclosing
     )
-    gc::set_compiler(&compiler)
+    gc::set_compiler(compiler)
 
     let name_val = vm.copy_string(name.data, name.len)
     func.init(name_val.as_string(), chunk, 0) // Replace arity later...
@@ -73,6 +76,7 @@ def Compiler::make(
 def Compiler::free(&this) {
     .locals.free()
     .upvars.free()
+    mem::free(this)
 }
 
 def Compiler::make_str(&this, text: SV): Value {
@@ -366,7 +370,7 @@ def Compiler::compile_expression(&this, node: &AST) {
 
 def Compiler::compile_function(&this, node: &AST, func: &nodes::Function) {
     let compile_type: CompileType = if func.is_method then Method else Function
-    let cc = Compiler::make(
+    let cc = Compiler::new(
         .vm,
         func.sym.name,
         func.sym.span,
@@ -520,10 +524,11 @@ def Compiler::compile_ns(&this, root: &AST) {
 
 // TODO: More complex structures than just expressions?
 def compile_program(vm: &VM, root: &AST): &FunctionCode {
-    let compiler = Compiler::make(vm, SV("",0), root.span, Script)
+    let compiler = Compiler::new(vm, SV("",0), root.span, Script)
     compiler.compile_ns(root)
     compiler.chunk.push_op(Halt, root.span)
     gc::set_compiler(null)
+    let func = compiler.func
     compiler.free()
-    return compiler.func
+    return func
 }

@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 
 RUN apt-get update
-RUN apt-get install -y git valgrind gcc
+RUN apt-get install -y git valgrind gcc python3
 
 ENTRYPOINT git clone https://github.com/ocen-lang/ocen /ocen/ \
     && cd /ocen/ \
