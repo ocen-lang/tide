@@ -13,7 +13,7 @@ import .gc
 import .value::{
     Value, String, Object, ObjectType,
     NativeFunctionType, NativeFunction, FunctionCode,
-    UpValue, Function
+    UpValue, Function, Class, Instance
 }
 import .native
 
@@ -240,6 +240,14 @@ def VM::print_value(&this, val: Value) => if {
             let upval = .stack.data[slot]
             .print_value(upval)
         }
+        Class => {
+            let name = val.as_class().name
+            print(f"<class {name.data}>")
+        }
+        Instance => {
+            let name = val.as_instance().class.name
+            print(f"<instance {name.data}>")
+        }
     }
     else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
 }
@@ -378,7 +386,7 @@ def VM::main_loop(&this): i32 {
         //        causes perf to go from 1.2s -> 1.6s, _even if_
         //        the debug == false. Saving it into a local variable
         //        from the global one doesn't help either.
-        // if debug then .debug_dump_inst(print_stack: false)
+        // if debug then .debug_dump_inst(print_stack: true)
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
@@ -452,26 +460,38 @@ def VM::main_loop(&this): i32 {
                     .stack.push(value)
                 }
             }
+            Class => {
+                let name = .read_literal().as_string()
+                let class = gc::allocate_object<Class>(ObjectType::Class, this)
+                class.name = name
+                .stack.push(Value::Object(&class.obj))
+            }
             Call => {
-                let arity = .read_u8()
+                let arity = .read_u8() as u32
                 let val = .stack.back(arity as u32)
 
                 if {
                     val.is_function() => {
                         let func = val.as_function()
                         let code = func.code
-                        if code.arity != arity {
+                        if code.arity as u32 != arity {
                             .error(f"Function {code.name.data} expected {code.arity} arguments, got {arity}")
                         }
-                        .push_frame(func, .stack.size - arity as u32)
+                        .push_frame(func, .stack.size - arity)
                     }
                     val.is_native_function() => {
                         let func = val.as_native_function()
-                        let res = func.func(this, arity as u32, &.stack.data[.stack.size - arity as u32])
+                        let res = func.func(this, arity, &.stack.data[.stack.size - arity])
                         .stack.size -= arity as u32 + 1  // Pop the arguments and the function
                         .stack.push(res)
                     }
                     val.is_function_code() => .error("Function should have been a func")
+                    val.is_class() => {
+                        let class = val.as_class()
+                        let instance = gc::allocate_object<Instance>(ObjectType::Instance, this)
+                        instance.init(class)
+                        .stack.data[.stack.size - arity - 1] = Value::Object(&instance.obj)
+                    }
                     else => .error(f"Can only call functions, got {val.type_str()}")
                 }
             }

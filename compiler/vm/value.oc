@@ -4,6 +4,7 @@
 
 import std::mem
 import std::vector::{ Vector }
+import std::compact_map::{ Map }
 
 import @bytecode::{ Chunk }
 
@@ -72,6 +73,12 @@ def Value::as_native_function(this): &NativeFunction => .as_obj() as &NativeFunc
 def Value::is_upvalue(this): bool => .is_obj_type(UpValue)
 def Value::as_upvalue(this): &UpValue => .as_obj() as &UpValue
 
+def Value::is_class(this): bool => .is_obj_type(Class)
+def Value::as_class(this): &Class => .as_obj() as &Class
+
+def Value::is_instance(this): bool => .is_obj_type(Instance)
+def Value::as_instance(this): &Instance => .as_obj() as &Instance
+
 def Value::is_function(this): bool => .is_obj_type(Function)
 def Value::as_function(this): &Function => .as_obj() as &Function
 
@@ -99,6 +106,8 @@ def Value::type_str(this): str => if {
             FunctionCode => "code"
             NativeFunction => "<native function>"
             UpValue => "upvalue"
+            Class => "class"
+            Instance => "instance"
         }
     }
     else => "<unknown>"
@@ -120,6 +129,9 @@ enum ObjectType {
     String
     NativeFunction
     UpValue
+    Class
+    Instance
+
     //! Representing the function code itself, not a closure
     FunctionCode
     //! Representing a function with captured variables
@@ -132,14 +144,6 @@ struct Object {
     type: ObjectType
     next: &Object
     marked: bool
-}
-
-def Object::size(&this): u32 => match .type {
-    String => sizeof(String)
-    Function => sizeof(Function)
-    FunctionCode => sizeof(FunctionCode)
-    NativeFunction => sizeof(NativeFunction)
-    UpValue => sizeof(UpValue)
 }
 
 def Object::print(&this) {
@@ -172,6 +176,14 @@ def Object::print(&this) {
         UpValue => {
             let uv = this as &UpValue
             print(f"<upvalue {uv.slot}>")
+        }
+        Class => {
+            let c = this as &Class
+            print(f"<class {c.name.data}>")
+        }
+        Instance => {
+            let i = this as &Instance
+            print(f"<instance {i.class.name.data}>")
         }
     }
 }
@@ -246,4 +258,20 @@ struct NativeFunction {
 def NativeFunction::init(&this, name: &String, func: NativeFunctionType) {
     .name = name
     .func = func
+}
+
+struct Class {
+    obj: Object
+    name: &String
+}
+
+struct Instance {
+    obj: Object
+    class: &Class
+    fields: &Map<&String, Value>
+}
+
+def Instance::init(&this, class: &Class) {
+    .class = class
+    .fields = Map<&String, Value>::new()
 }

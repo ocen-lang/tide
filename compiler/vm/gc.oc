@@ -1,6 +1,10 @@
 import std::mem
 
-import .value::{ Value, Object, ObjectType, String, Function, FunctionCode, NativeFunction, UpValue }
+import .value::{
+    Value, Object, ObjectType, String, Function,
+    FunctionCode, NativeFunction, UpValue, Class,
+    Instance
+}
 import ..compiler::{ Compiler }
 import .{ VM, ValueCompareString }
 
@@ -116,7 +120,11 @@ def free_object(obj: &Object, vm: &VM) {
             f.chunk.free()
             // NOTE: A function does not own its name
         }
-        NativeFunction | UpValue => {}
+        Instance => {
+            let i = obj as &Instance
+            i.fields.free()
+        }
+        NativeFunction | UpValue | Class => {}
     }
 
     mem::free(obj)
@@ -194,6 +202,18 @@ def GarbageCollector::blacken_object(&this, obj: &Object) {
             let uv = obj as &UpValue
             if uv.slot == 0 {
                 .mark_value(uv.closed)
+            }
+        }
+        Class => {
+            let c = obj as &Class
+            .mark_object(&c.name.obj)
+        }
+        Instance => {
+            let i = obj as &Instance
+            .mark_object(&i.class.obj)
+            for it in i.fields.iter() {
+                .mark_object(&it.key.obj)
+                .mark_value(it.value)
             }
         }
         FunctionCode => {

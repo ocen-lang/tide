@@ -123,12 +123,9 @@ enum TokenType {
     Not
     Or
     Return
-    SizeOf
-    Struct
+    Class
     True
     Then
-    TypeDef
-    Union
     Import
     Void
     Yield
@@ -158,12 +155,9 @@ def TokenType::from_text(text: SV): TokenType => match text {
     "null" => Null
     "or" => Or
     "return" => Return
-    "sizeof" => SizeOf
-    "struct" => Struct
+    "class" => Class
     "true" => True
     "then" => Then
-    "typedef" => TypeDef
-    "union" => Union
     "import" => Import
     "void" => Void
     "yield" => Yield
@@ -195,12 +189,9 @@ def TokenType::str(this): str => match this {
     Null => "null"
     Or => "or"
     Return => "return"
-    SizeOf => "sizeof"
-    Struct => "struct"
+    Class => "class"
     True => "true"
     Then => "then"
-    TypeDef => "typedef"
-    Union => "union"
     Import => "import"
     Void => "void"
     Yield => "yield"

@@ -34,6 +34,7 @@ enum OpCode {
     SetUpvalue
     GetUpvalue
     CloseUpvalue
+    Class
 }
 
 struct DebugLocRun {
@@ -169,6 +170,10 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
         LessThan => println("LessThan")
         GreaterThan => println("GreaterThan")
         Equal => println("Equal")
+        Class => {
+            let name = .read_literal(&off).as_obj() as &String
+            println(f"Class {name.data}")
+        }
         Loop => {
             let arg = .read_u16(&off)
             println(f"Loop {arg}")

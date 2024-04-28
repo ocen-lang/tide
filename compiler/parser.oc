@@ -449,12 +449,6 @@ def Parser::parse_global_value(&this, is_const: bool): &AST {
 
     let var = Variable::new()
     var.sym = Symbol::from_variable(name.text, var, name.span)
-    var.sym.u.var = var
-
-    if is_const {
-        var.sym.type = SymbolType::Constant
-    }
-
 
     for attr : .attrs.iter() {
         match attr.type {
@@ -828,7 +822,6 @@ def Parser::parse_logical_or(&this, end_type: TokenType): &AST {
 
 def Parser::parse_expression(&this, end_type: TokenType): &AST {
     let lhs = .parse_logical_or(end_type)
-    
 
     while .token_is(Equals) or
             .token_is(PlusEquals) or
@@ -863,7 +856,7 @@ def Parser::parse_expression(&this, end_type: TokenType): &AST {
         if op == Assignment and lhs.type == BinaryOp and lhs.u.binary.op == Index {
             op = IndexAssign
         }
-        
+
         let rhs = .parse_expression(end_type)
         lhs = AST::new_binop(op, lhs, rhs, op_span)
     }
@@ -994,6 +987,24 @@ def Parser::parse_for_each(&this, start_span: Span): &AST {
     return node
 }
 
+def Parser::parse_class(&this): &AST {
+    let start = .consume(Class)
+    let name = .consume(Identifier)
+
+    if not .consume_if(OpenCurly) {
+        .error(Error::new(.token().span, "Expected '{'"))
+    }
+    if not .token_is(CloseCurly) {
+        .error(Error::new(.token().span, "Expected '}'"))
+    }
+
+    let end = .consume(CloseCurly)
+    let node = AST::new(Class, start.span.join(end.span))
+    let sym = Symbol::new_with_parent(.ns.sym, name.text, name.span)
+    node.u.class.sym = sym
+    return node
+}
+
 def Parser::parse_for(&this): &AST {
     let tok = .consume(For)
 
@@ -1030,6 +1041,7 @@ def Parser::parse_statement(&this): &AST {
     match .token().type {
         OpenCurly => node = .parse_block()
         Def => node = .parse_function()
+        Class => node = .parse_class()
         Return => {
             .consume(Return)
             let expr = null as &AST
@@ -1173,8 +1185,7 @@ def Parser::parse_function(&this): &AST {
         }
     }
 
-    func.sym = Symbol::new_with_parent(Function, .ns.sym, name, name_span)
-    func.sym.u.func = func
+    func.sym = Symbol::new_with_parent(.ns.sym, name, name_span)
     .add_doc_comment(func.sym, start)
 
     .consume(OpenParen)
@@ -1473,10 +1484,6 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
 
             //     .ns = old_ns
             // }
-            // Struct | Union => {
-            //     let struc = .parse_struct()
-            //     if struc? then .ns.structs.push(struc)
-            // }
             // TypeDef => {
             //     if .attrs.size > 0 {
             //         .error(Error::new(.token().span, "Attributes are not allowed on typedefs"))
@@ -1519,7 +1526,7 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
 }
 
 def Parser::load_file(&this, filename: str, contents_str: str = null) {
-    // TODO(TIDE): Don't load the file if it's already loaded, 
+    // TODO(TIDE): Don't load the file if it's already loaded,
     //              This can potentially cause a loop
     // if .sources.contains(filename) return
     let loc = Location(filename.copy(), 0, 0, 0)
@@ -1555,8 +1562,7 @@ def Parser::parse_file(&this, filename: str, file_contents: str = null): &AST {
     if .err_jmp_ctx.set_jump_point() > 0 return null
 
     let global_ns = Namespace::new()
-    let sym = Symbol::new(Namespace, SV("",0), SV("",0), Span::default())
-    sym.u.ns = global_ns
+    let sym = Symbol::new(SV("",0), SV("",0), Span::default())
     global_ns.sym = sym
 
     .ns = global_ns
