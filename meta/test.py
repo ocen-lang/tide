@@ -61,6 +61,7 @@ def get_expected(filename) -> Optional[Expected]:
 
 def handle_test(interpreter: str, num: int, path: Path, expected: Expected) -> Tuple[bool, str, Path]:
     os.environ["LOG"] = "ERROR"
+    os.environ["STRESS_GC"] = "1"
     process = run(
         [interpreter, str(path)],
         stdout=PIPE,
@@ -113,6 +114,12 @@ def pool_helper(args):
 def main():
     parser = argparse.ArgumentParser(description="Runs tide test suite")
     parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Debug mode"
+    )
+    parser.add_argument(
         "files",
         nargs="?",
         default=["tests"],
@@ -156,21 +163,35 @@ def main():
         for num, (test_path, expected) in enumerate(tests_to_run)
     ]
 
-    with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
-        for passed, message, path in pool.imap_unordered(pool_helper, arguments):
+    def log_result(passed, message, path):
+        nonlocal num_passed, num_failed, num_total
+        if sys.stdout.isatty() and not args.debug:
+            print(f" \33[2K[\033[92m{num_passed:3d}\033[0m", end="")
+            print(f"/\033[91m{num_failed:3d}\033[0m]", end="")
+            print(f" Running tests, finished {num_passed+num_failed} / {num_total}\r", end="", flush=True)
+        else:
+            print(f" Running tests, finished {num_passed+num_failed} / {num_total}", flush=True)
+        if passed:
+            num_passed += 1
+        else:
+            num_failed += 1
             if sys.stdout.isatty():
-                print(f" \33[2K[\033[92m{num_passed:3d}\033[0m", end="")
-                print(f"/\033[91m{num_failed:3d}\033[0m]", end="")
-                print(f" Running tests, finished {num_passed+num_failed} / {num_total}\r", end="", flush=True)
-            if passed:
-                num_passed += 1
+                print(f"\33[2K\033[91m[-] Failed {path}\033[0m")
+                print(f"  - {message}", flush=True)
             else:
-                num_failed += 1
-                if sys.stdout.isatty():
-                    print(f"\33[2K\033[91m[-] Failed {path}\033[0m")
-                    print(f"  - {message}", flush=True)
-                else:
-                    print(f"[-] Failed {path}")
+                print(f"[-] Failed {path}")
+
+
+    if args.debug:
+        for inp in arguments:
+            print(inp)
+            passed, message, path = pool_helper(inp)
+            log_result(passed, message, path)
+
+    else:
+        with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
+            for passed, message, path in pool.imap_unordered(pool_helper, arguments):
+                log_result(passed, message, path)
 
     if sys.stdout.isatty():
         print("\33[2K")

@@ -399,7 +399,7 @@ def VM::main_loop(&this): i32 {
         //        causes perf to go from 1.2s -> 1.6s, _even if_
         //        the debug == false. Saving it into a local variable
         //        from the global one doesn't help either.
-        if debug then .debug_dump_inst(print_stack: true)
+        // if debug then .debug_dump_inst(print_stack: true)
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
@@ -476,8 +476,8 @@ def VM::main_loop(&this): i32 {
             Class => {
                 let name = .read_literal().as_string()
                 let class = gc::allocate_object<Class>(ObjectType::Class, this)
-                class.init(name)
                 .stack.push(Value::Object(&class.obj))
+                class.init(name)
             }
             Method => {
                 let val = .stack.back(0)
@@ -517,8 +517,15 @@ def VM::main_loop(&this): i32 {
                     Class => {
                         let class = val.as_class()
                         let instance = gc::allocate_object<Instance>(ObjectType::Instance, this)
+                        let val = Value::Object(&instance.obj)
+
+                        // instance.init allocates memory, so we need to push this on the stack
+                        // so the GC can find it if we collect
+                        .stack.push(val)
                         instance.init(class)
-                        .stack.data[.stack.size - arity - 1] = Value::Object(&instance.obj)
+                        .stack.pop()
+
+                        .stack.data[.stack.size - arity - 1] = val
                     }
                     Method => {
                         let method = val.as_method()
@@ -593,12 +600,15 @@ def VM::main_loop(&this): i32 {
             True => .stack.push(Value::True())
             False => .stack.push(Value::False())
             CloseFunction => {
-                let arg = .stack.pop()
+                let arg = .stack.back()
                 if not arg.is_function_code() {
                     .error(f"Expected function, got {arg.type_str()}")
                 }
                 let code = arg.as_function_code()
                 let func = .make_function(code)
+                let func_val = Value::Object(&func.obj)
+                .stack.pop()
+                .stack.push(func_val)
 
                 let num_upvals = .read_u16() as u32
                 if num_upvals > 0 {
@@ -618,7 +628,6 @@ def VM::main_loop(&this): i32 {
                         // print(`  [VM] Upval {index} is outside: {upval.slot}\n`)
                     }
                 }
-                .stack.push(Value::Object(&func.obj))
             }
             GetUpvalue => {
                 let idx = .read_u16() as u32

@@ -16,6 +16,7 @@ import .lexer::{ Lexer }
 import .compiler::{ compile_program }
 import .vm::{ VM }
 import .vm::gc
+import .vm::value::{ Value }
 import .bump_alloc
 
 def usage(code: i32, full: bool) {
@@ -86,15 +87,22 @@ def main(argc: i32, argv: &str) {
 
     gc::initialize_gc_allocator()
 
+    gc::state::paused = true
     let vm = VM::make()
     gc::set_vm(&vm)
-
+    gc::state::paused = false
     let script = compile_program(&vm, ast)
 
     if debug {
+        // Throw the script on the stack to prevent it from being collected
+        let val = Value::Object(&script.obj)
+        vm.stack.push(val)
+
         script.chunk.dump()
         println("============================================")
         log(Info, "Running VM:")
+
+        vm.stack.pop()
     }
 
     let status = vm.run(script)
