@@ -102,23 +102,19 @@ enum TokenType {
 
     // Keywords
     And
-    As
     Assert
     Break
-    Const
     Continue
     Def
     Defer
+    Extends
     Else
     Enum
-    Extern
     False
     For
-    Fn
     If
     Let
     Match
-    Namespace
     Null
     Not
     Or
@@ -127,30 +123,27 @@ enum TokenType {
     True
     Then
     Import
-    Void
     Yield
     While
+    This
+    Super
 }
 
 def TokenType::from_text(text: SV): TokenType => match text {
     "and" => And
-    "as" => As
     "assert" => Assert
     "break" => Break
-    "const" => Const
     "continue" => Continue
     "def" => Def
     "defer" => Defer
     "else" => Else
     "enum" => Enum
-    "extern" => Extern
+    "extends" => Extends
     "false" => False
     "for" => For
-    "fn" => Fn
     "if" => If
     "let" => Let
     "match" => Match
-    "namespace" => Namespace
     "not" => Not
     "null" => Null
     "or" => Or
@@ -159,32 +152,29 @@ def TokenType::from_text(text: SV): TokenType => match text {
     "true" => True
     "then" => Then
     "import" => Import
-    "void" => Void
     "yield" => Yield
     "while" => While
+    "this" => This
+    "super" => Super
     else => Identifier
 }
 
 def TokenType::str(this): str => match this {
     // Keywords
     And => "and"
-    As => "as"
     Assert => "assert"
     Break => "break"
-    Const => "const"
     Continue => "continue"
     Def => "def"
     Defer => "defer"
     Else => "else"
     Enum => "enum"
-    Extern => "extern"
+    Extends => "extends"
     False => "false"
     For => "for"
-    Fn => "fn"
     If => "if"
     Let => "let"
     Match => "match"
-    Namespace => "namespace"
     Not => "not"
     Null => "null"
     Or => "or"
@@ -193,9 +183,10 @@ def TokenType::str(this): str => match this {
     True => "true"
     Then => "then"
     Import => "import"
-    Void => "void"
     Yield => "yield"
     While => "while"
+    This => "this"
+    Super => "super"
 
     // Others
     else => .dbg()

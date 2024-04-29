@@ -35,10 +35,12 @@ enum OpCode {
     GetUpvalue
     CloseUpvalue
     Class
+    GetSuper
     SetMember
     GetMember
-    Method
+    AttachMethod
     Invoke
+    Inherit
 }
 
 struct DebugLocRun {
@@ -171,10 +173,12 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
         Mul => println("Mul")
         Div => println("Div")
         Halt => println("Halt")
+        Inherit => println("Inherit")
         LessThan => println("LessThan")
         GreaterThan => println("GreaterThan")
         Equal => println("Equal")
-        SetMember | GetMember | Class | GetGlobal | SetGlobal | Method | Invoke  => {
+        SetMember | GetMember | Class | GetGlobal |
+        SetGlobal| AttachMethod | Invoke | GetSuper => {
             let name = .read_literal(&off).as_obj() as &String
             println(f"{op} {name.data}")
         }

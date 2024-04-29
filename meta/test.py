@@ -180,6 +180,8 @@ def main():
                 print(f"  - {message}", flush=True)
             else:
                 print(f"[-] Failed {path}")
+        if args.debug and not passed:
+            exit(1)
 
 
     if args.debug:

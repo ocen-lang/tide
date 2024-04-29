@@ -39,6 +39,7 @@ enum ASTType {
     Match
     Defer
     ArrayLiteral
+    Super
 
     UnaryOp
     BinaryOp
@@ -70,6 +71,8 @@ struct VarDeclaration {
 struct Class {
     sym: &Symbol
     methods: &Vector<&AST>
+    has_super: bool
+    super_name: SV
 }
 
 def Class::new(sym: &Symbol): &Class {
@@ -257,9 +260,7 @@ struct Block {
 
 struct Identifier {
     name: SV
-    var: &Variable
-    is_function: bool
-    func: &Function
+    span: Span
 }
 
 struct Argument {
@@ -495,6 +496,8 @@ union ASTUnion {
     class: &Class
     enom: &Enum
     ns: &Namespace
+    //! Stores `name` from `super.name`
+    super: Identifier
 }
 
 struct AST {
@@ -510,6 +513,12 @@ def AST::new(type: ASTType, span: Span): &AST {
     return ast
 }
 
+def AST::new_ident(name: SV, span: Span): &AST {
+    let ast = AST::new(Identifier, span)
+    ast.u.ident.name = name
+    return ast
+}
+
 def AST::new_unop(op: Operator, span: Span, expr: &AST): &AST {
     let ast = AST::new(UnaryOp, span)
     ast.u.unary = Unary::new(op, expr, span)
@@ -521,22 +530,6 @@ def AST::new_binop(op: Operator, lhs: &AST, rhs: &AST, op_span: Span): &AST {
     let ast = AST::new(BinaryOp, span)
     ast.u.binary = Binary::new(op, lhs, rhs, op_span)
     return ast
-}
-
-def AST::is_identifier(&this): bool => match .type {
-    Identifier => true
-    NSLookup => true
-    else => false
-}
-
-def AST::is_lvalue(&this): bool => match .type {
-    Identifier => not .u.ident.is_function
-    Member => true
-    UnaryOp => .u.unary.op == Dereference
-    BinaryOp => .u.binary.op == Index
-    // TODO: does this make sense?
-    NSLookup => false
-    else => false
 }
 
 struct Symbol {
@@ -560,8 +553,8 @@ def Symbol::new(name: SV, display: SV, span: Span): &Symbol {
     return item
 }
 
-def Symbol::join_display(a: SV, b: SV): SV => if a.len == 0 then b else SV::from_str(`{a}::{b}`)
-def Symbol::join_full_name(a: SV, b: SV): SV => if a.len == 0 then b else SV::from_str(`{a}_{b}`)
+def Symbol::join_display(a: SV, b: SV): SV => if a.len == 0 then b else SV::from_str(`{a}.{b}`)
+def Symbol::join_full_name(a: SV, b: SV): SV => if a.len == 0 then b else SV::from_str(`{a}.{b}`)
 
 def Symbol::new_with_parent(parent: &Symbol, name: SV, span: Span): &Symbol {
     let display = Symbol::join_display(parent.display, name)

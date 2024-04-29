@@ -57,9 +57,9 @@ def Compiler::new(vm: &VM, sym: &Symbol, type: FunctionType, enclosing: &Compile
     func.init(name_val.as_string(), chunk, 0) // Replace arity later...
 
     if type != Function {
-        locals.push(LocalVar(SV("this",4), sym.span, 0, false))
+        locals.push(LocalVar(SV::from_str("this"), sym.span, 0, false))
     } else {
-        locals.push(LocalVar(SV("",0), sym.span, 0, false))
+        locals.push(LocalVar(SV::from_str(""), sym.span, 0, false))
     }
 
     return compiler
@@ -144,16 +144,20 @@ def Compiler::find_upvar(&this, name: SV, span: Span): i32 {
 
 //! Create a new variable in the current scope.
 //! Meant to be called _before_ the value is pushed to the stack.
-def Compiler::create_variable(&this, sym: &Symbol) {
+def Compiler::create_variable(&this, name: SV, span: Span) {
     // Global variable
     if .scope_depth == 0 {
         return
     }
 
     // Local variable
-    let local_var = LocalVar(sym.name, sym.span, -1, false) // Uninitialized...
+    let local_var = LocalVar(name, span, -1, false) // Uninitialized...
     .locals.push(local_var)
 }
+
+//! Create a new variable in the current scope.
+//! Meant to be called _before_ the value is pushed to the stack.
+def Compiler::create_variable_sym(&this, sym: &Symbol) => .create_variable(sym.name, sym.span)
 
 //! Mark the last defined variable as initialized
 def Compiler::mark_variable_initialized(&this) {
@@ -167,16 +171,20 @@ def Compiler::mark_variable_initialized(&this) {
 
 //! Save the value on the top of the stack to last defined variable.
 //! Meant to be called _after_ the value has been pushed to the stack.
-def Compiler::define_variable(&this, sym: &Symbol) {
+def Compiler::define_variable(&this, name: SV, span: Span) {
     // Local variable, nothing to do
     if .scope_depth > 0 {
         return
     }
 
     // Global variable
-    .chunk.push_with_literal(.vm, SetGlobal, .make_str(sym.name), sym.span)
-    .chunk.push_op(Pop, sym.span)
+    .chunk.push_with_literal(.vm, SetGlobal, .make_str(name), span)
+    .chunk.push_op(Pop, span)
 }
+
+//! Save the value on the top of the stack to last defined variable.
+//! Meant to be called _after_ the value has been pushed to the stack.
+def Compiler::define_variable_sym(&this, sym: &Symbol) => .define_variable(sym.name, sym.span)
 
 //! Get the value of the named variable, and push it to the stack.
 def Compiler::compile_variable(&this, name: SV, span: Span) {
@@ -265,6 +273,12 @@ def Compiler::compile_expression(&this, node: &AST) {
         Null => .chunk.push_op(Null, node.span)
         // TODO: Special handling of `this`, disallow outside methods
         Identifier => .compile_variable(node.u.ident.name, node.span)
+        Super => {
+            .compile_variable(SV::from_str("this"), node.span)
+            .compile_variable(SV::from_str("super"), node.span)
+            let name = .make_str(node.u.super.name)
+            .chunk.push_with_literal(.vm, GetSuper, name, node.span)
+        }
         Call => {
             let callee = node.u.call.callee
             let args = node.u.call.args
@@ -391,7 +405,7 @@ def Compiler::compile_function(&this, node: &AST, func: &nodes::Function) {
 
     cc.begin_scope()
     for param in func.params.iter() {
-        cc.create_variable(param.sym)
+        cc.create_variable_sym(param.sym)
         cc.mark_variable_initialized()
     }
 
@@ -438,27 +452,43 @@ def Compiler::compile_statement(&this, node: &AST) {
             } else {
                 .chunk.push_op(Null, node.span)
             }
-            .create_variable(sym)
-            .define_variable(sym)
+            .create_variable_sym(sym)
+            .define_variable_sym(sym)
             .mark_variable_initialized()
         }
         Function => {
             let ast_func = node.u.func
 
-            .create_variable(ast_func.sym)
+            .create_variable_sym(ast_func.sym)
             .mark_variable_initialized()
 
             .compile_function(node, ast_func)
 
-            .define_variable(ast_func.sym)
+            .define_variable_sym(ast_func.sym)
         }
         Class => {
             let class = node.u.class
             let sym = class.sym
             let name = .vm.copy_string(sym.name.data, sym.name.len)
-            .create_variable(sym)
+            .create_variable_sym(sym)
             .chunk.push_with_literal(.vm, Class, name, sym.span)
-            .define_variable(sym)
+            .define_variable_sym(sym)
+
+            if class.has_super {
+                if class.super_name == sym.name {
+                    Error::new(
+                        sym.span, "Compiler: A class cannot inherit from itself."
+                    ).panic()
+                }
+                .compile_variable(class.super_name, class.sym.span)
+
+                .begin_scope()
+                .create_variable(SV::from_str("super"), class.sym.span)
+                .mark_variable_initialized()
+
+                .compile_variable(sym.name, sym.span)
+                .chunk.push_op(Inherit, class.sym.span)
+            }
 
             // Re-get the class object
             .compile_variable(sym.name, sym.span)
@@ -467,10 +497,14 @@ def Compiler::compile_statement(&this, node: &AST) {
                 let method = method_ast.u.func
                 .compile_function(method_ast, method)
                 let method_name = .make_str(method.sym.name)
-                .chunk.push_with_literal(.vm, Method, method_name, method.sym.span)
+                .chunk.push_with_literal(.vm, AttachMethod, method_name, method.sym.span)
             }
 
             .chunk.push_op(Pop, sym.span)
+
+            if class.has_super {
+                .end_scope(class.sym.span)
+            }
         }
         If => .compile_if(node, is_expression: false)
         While => {

@@ -10,7 +10,6 @@ import std::setjmp::{ ErrorContext }
 import std::fs
 
 import @ast::nodes::{ * }
-import @ast::attributes::{ Attribute, AttributeType }
 import @errors::{ Error, display_error_messages }
 import @lexer::Lexer
 import @tokens::{ Token, TokenType }
@@ -27,15 +26,13 @@ struct Parser {
     peek_tok: Token
     peeked: bool
 
-    attrs: &Vector<&Attribute>
-    attrs_span: Span
-    attrs_start_tok: Token
-
     cur_func: &Function
     ns: &Namespace
 
     err_jmp_ctx: ErrorContext
     errors: &Vector<&Error>
+
+    class_stack: &Vector<&Class>
 }
 
 def Parser::exit_with_errors_if_any(&this) {
@@ -45,10 +42,16 @@ def Parser::exit_with_errors_if_any(&this) {
     }
 }
 
-def Parser::make(): Parser {
+def Parser::make(parent: &Parser = null): Parser {
     let parser: Parser
-    parser.attrs = Vector<&Attribute>::new()
-    parser.errors = Vector<&Error>::new()
+    // Inherit these from the parent parser
+    if parent? {
+        parser.errors = parent.errors
+        parser.class_stack = parent.class_stack
+    } else {
+        parser.errors = Vector<&Error>::new()
+        parser.class_stack = Vector<&Class>::new()
+    }
     return parser
 }
 
@@ -72,7 +75,7 @@ def Parser::error(&this, err: &Error): &Error {
 }
 
 def Parser::unhandled_type(&this, func: str) {
-    .error_msg(`{.token().span}: Unexpected token in {func}: {.token().type.str()}`)
+    .error_msg(`Unexpected token in {func}: {.token().type.str()}`)
 }
 
 def Parser::token(&this): Token {
@@ -148,13 +151,6 @@ def Parser::consume_end_of_statement(&this) {
     .consume_newline_or(Semicolon)
 }
 
-def Parser::clear_attributes(&this) {
-    for attr : .attrs.iter() {
-        mem::free(attr)
-    }
-    .attrs.clear()
-}
-
 def Parser::is_compound_operator(&this, op: Operator): bool => match op {
     LeftShift => .token_is(LessThan) and .peek_token_is(1, LessThan)
     RightShift => .token_is(GreaterThan) and .peek_token_is(1, GreaterThan)
@@ -177,43 +173,6 @@ def Parser::consume_compound_operator(&this, op: Operator): Span {
     let cur_start_span = Span(.token().span.start, .token().span.start)
     return span.join(cur_start_span)
 }
-
-def Parser::parse_identifier(&this): &AST {
-    let tok = .consume(Identifier)
-    let node = AST::new(Identifier, tok.span)
-    node.u.ident.name = tok.text
-    return node
-}
-
-def Parser::parse_scoped_identifier(&this): &AST {
-    let node = .parse_identifier()
-
-    while true {
-        match .token().type {
-            ColonColon => {
-                .consume(ColonColon)
-
-                let lookup = AST::new(NSLookup, node.span)
-                lookup.u.lookup = NSLookup::new(node, SV("",0), node.span) // Placeholder
-                node = lookup
-
-                if not .token_is(Identifier) {
-                    .error(Error::new(.token().span, "Expected identifier after `::`"))
-                    node.span.end = .token().span.start
-                } else {
-                    let name = .consume(Identifier)
-                    node.span = node.span.join(name.span)
-                    node.u.lookup.rhs_name = name.text
-                    node.u.lookup.rhs_span = name.span
-                }
-            }
-            else => return node
-        }
-    }
-
-    return null // unreachable
-}
-
 
 def Parser::parse_format_string(&this): &AST {
     let fstr = .consume(FormatStringLiteral)
@@ -438,11 +397,7 @@ def Parser::parse_var_declaration(&this): &AST {
 }
 
 def Parser::parse_global_value(&this, is_const: bool): &AST {
-    let start_token = if is_const {
-        yield .consume(Const)
-    } else {
-        yield .consume(Let)
-    }
+    let start_token = .consume(Let)
 
     let node = AST::new(VarDeclaration, .token().span)
     let name = if .token_is(Identifier) {
@@ -454,12 +409,6 @@ def Parser::parse_global_value(&this, is_const: bool): &AST {
 
     let var = Variable::new()
     var.sym = Symbol::from_variable(name.text, var, name.span)
-
-    for attr : .attrs.iter() {
-        match attr.type {
-            else => .error(Error::new(attr.span, "Unexpected attribute for variable"))
-        }
-    }
 
     node.u.var_decl.var = var
 
@@ -509,7 +458,32 @@ def Parser::parse_atom(&this, end_type: TokenType): &AST {
             let tok = .consume(CharLiteral)
             node.u.char_literal = tok.text
         }
-        Identifier => node = .parse_scoped_identifier()
+        This => {
+            let tok = .consume(This)
+            if .class_stack.is_empty() {
+                .error(Error::new(tok.span, "Cannot use `this` outside of a class"))
+            }
+            node = AST::new_ident(tok.text, tok.span)
+        }
+        Identifier => {
+            let tok = .consume(Identifier)
+            node = AST::new_ident(tok.text, tok.span)
+        }
+        Super => {
+            let sup_tok = .consume(Super)
+            if {
+                .class_stack.is_empty() => .error(Error::new(sup_tok.span, "Cannot use `super` outside of a class"))
+                not .class_stack.back().has_super => .error(Error::new(sup_tok.span, "This class doesn't have a super class"))
+            }
+
+            if not .consume_if(Dot) {
+                .error(Error::new(sup_tok.span, "Expected `.` after `super`"))
+            }
+            let arg = .consume(Identifier)
+            node = AST::new(Super, sup_tok.span.join(arg.span))
+            node.u.super.name = arg.text
+            node.u.super.span = arg.span
+        }
         True | False => {
             let tok = .consume(.token().type)
             node = AST::new(BoolLiteral, tok.span)
@@ -1000,6 +974,14 @@ def Parser::parse_class(&this): &AST {
     let sym = Symbol::new_with_parent(.ns.sym, name.text, name.span)
     node.u.class = Class::new(sym)
 
+    .class_stack.push(node.u.class)
+
+    if .consume_if(Extends) {
+        let super_tok = .consume(Identifier)
+        node.u.class.super_name = super_tok.text
+        node.u.class.has_super = true
+    }
+
     if not .consume_if(OpenCurly) {
         .error(Error::new(.token().span, "Expected '{'"))
     }
@@ -1012,6 +994,8 @@ def Parser::parse_class(&this): &AST {
     if not .token_is(CloseCurly) {
         .error(Error::new(.token().span, "Expected '}'"))
     }
+
+    .class_stack.pop()
 
     let end = .consume(CloseCurly)
     return node
@@ -1160,13 +1144,6 @@ def Parser::add_doc_comment(&this, sym: &Symbol, token: Token) {
         sym.comment = token.comment
         sym.comment_loc = token.comment_loc
     }
-
-    if .attrs.size > 0 and not .attrs_start_tok.comment.is_empty() {
-        if sym.comment.is_empty() {
-            sym.comment = .attrs_start_tok.comment
-            sym.comment_loc = .attrs_start_tok.comment_loc
-        }
-    }
 }
 
 def Parser::parse_function_body(&this): &AST => match .token().type {
@@ -1207,18 +1184,24 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
     let node = AST::new(Function, start.span.join(name.span))
     node.u.func = func
 
+    let parent = match .class_stack.size > 0 {
+        true => .class_stack.back().sym
+        false => .ns.sym
+    }
     func.sym = Symbol::new_with_parent(.ns.sym, name.text, name.span)
     .add_doc_comment(func.sym, start)
 
     .consume(OpenParen)
     let found_this_arg = false
     while not .token_is(CloseParen) {
-        let var_name = .consume(Identifier)
-        if func.params.size == 0 and var_name.text == "this" {
+        if func.params.size == 0 and expect_this_arg and .token_is(This) {
             // Don't actually need to add `this` to the params list, since
             // we special-case this when binding methods.
             found_this_arg = true
+            .consume(This)
+
         } else {
+            let var_name = .consume(Identifier)
             let var = Variable::new()
             var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
             func.params.push(var)
@@ -1258,7 +1241,7 @@ def Parser::parse_import_path(&this): &Vector<&ImportPart> {
             let part = ImportPart::new(Single, word.span)
             part.u.single.name = word.text.data
 
-            if .consume_if(As) {
+            if .token_is_identifier("as") {
                 let alias = .consume(Identifier)
                 part.u.single.alias = alias.text.data
                 part.u.single.alias_span = alias.span
@@ -1353,79 +1336,19 @@ def Parser::parse_import(&this): &AST {
         export: false
     )
 
-    for attr : .attrs.iter() {
-        match attr.type {
-            Export => node.u.import_path.export = true
-            else => .error(Error::new(attr.span, "Invalid attribute for import"))
-        }
-    }
-
     return node
-}
-
-def Parser::parse_attribute(&this) {
-    let start = .consume(OpenSquare)
-    if .attrs.size == 0 {
-        .attrs_span = start.span
-        .attrs_start_tok = start
-    }
-
-    // FIXME: Should `extern` be a keyword once we have fully moved to attrs?
-    if not (.token_is(Identifier) or .token_is(Extern)) {
-        .error(Error::new(.token().span, "Expected attribute name here"))
-        return
-    }
-
-    let name = .consume(.token().type)
-    let attr_type = AttributeType::from_str(name.text.data)
-    if attr_type == Invalid {
-        .error(Error::new(name.span, "Unknown attribute type"))
-        return
-    }
-    let attr = Attribute::new(attr_type, name.span)
-
-    while not .token_is(CloseSquare) {
-        if not .token_is(StringLiteral) {
-            .error(Error::new(.token().span, "Only string literals supported in attribute arguments"))
-            .inc()
-            continue
-        }
-
-        let arg = .consume(StringLiteral)
-        attr.args.push(arg.text.data)
-    }
-    let close = .consume(CloseSquare)
-    .attrs_span = .attrs_span.join(close.span)
-
-    // We don't want to handle invalid attributes, so we just ignore them.
-    if not attr.validate(this) return
-
-    .attrs.push(attr)
 }
 
 def Parser::parse_namespace_until(&this, end_type: TokenType) {
     .add_doc_comment(.ns.sym, .token())
 
     while not .token_is(end_type) {
-        // NOTE: We always clear the attributes after we are done parsing a statement.
-        //       This variable keeps track of whether we're in a statement or not.
-        //       Clearing the statements is at the end of this loop.
-        let still_parsing_attributes = false
-
         let stmt = match .token().type {
-            OpenSquare => {
-                .parse_attribute()
-                still_parsing_attributes = true
-                yield null as &AST
-            }
             // Import => {
             //     let import_ = .parse_import()
             //     if import_? then .ns.imports.push(import_)   // For typechecker...
             // }
             // Namespace => {
-            //     if .attrs.size > 0 {
-            //         .error(Error::new(.token().span, "Attributes are not allowed on namespaces"))
-            //     }
 
             //     let start = .consume(Namespace).span
             //     let name = .consume(Identifier)
@@ -1479,10 +1402,6 @@ def Parser::parse_namespace_until(&this, end_type: TokenType) {
 
         if stmt? {
             .ns.statements.push(stmt)
-        }
-
-        if not still_parsing_attributes {
-            .clear_attributes()
         }
     }
 }

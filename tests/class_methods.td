@@ -1,7 +1,7 @@
 /// out: <instance Foo> 5 8
 
 class Foo {
-    def bar(this) => .x = 5
+    def bar(this) => this.x = 5
     def test(this, a, b) => .x + a + b
 }
 

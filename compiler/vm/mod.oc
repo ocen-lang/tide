@@ -404,10 +404,10 @@ def VM::close_upvalue(&this, slot: u32) {
     }
 }
 
-def VM::bind_method(&this, instance: Value, func: &Function) {
+def VM::bind_method(&this, func: &Function) {
     let bound = gc::allocate_object<Method>(ObjectType::Method, this)
+    let instance = .stack.back()
     bound.init(instance, func)
-
     .stack.pop()  // Pop the instance
     .stack.push(Value::Object(&bound.obj))
 }
@@ -473,7 +473,7 @@ def VM::main_loop(&this): i32 {
         //        causes perf to go from 1.2s -> 1.6s, _even if_
         //        the debug == false. Saving it into a local variable
         //        from the global one doesn't help either.
-        // if debug then .debug_dump_inst(print_stack: true)
+        if debug then .debug_dump_inst(print_stack: true)
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
@@ -553,7 +553,21 @@ def VM::main_loop(&this): i32 {
                 .stack.push(Value::Object(&class.obj))
                 class.init(name)
             }
-            Method => {
+            GetSuper => {
+                let name = .read_literal().as_string()
+                let super_val = .stack.pop()
+                if not super_val.is_class() {
+                    .error(f"Can only access super on classes, got {super_val.type_str()}")
+                }
+                let super_class = super_val.as_class()
+
+                let method_it = super_class.methods.get_item(name)
+                if method_it? {
+                    .bind_method(method_it.value)
+                    continue
+                }
+            }
+            AttachMethod => {
                 let val = .stack.back(0)
                 let class = .stack.back(1).as_class()
 
@@ -619,7 +633,7 @@ def VM::main_loop(&this): i32 {
 
                 let method_it = instance.class.methods.get_item(name)
                 if method_it? {
-                    .bind_method(obj, method_it.value)
+                    .bind_method(method_it.value)
                     continue
                 }
 
@@ -649,6 +663,22 @@ def VM::main_loop(&this): i32 {
                     .call_value(arity, it.value)
                 }
 
+            }
+            Inherit => {
+                let super = .stack.back(1)
+                let base = .stack.back(0)
+
+                if not super.is_class() {
+                    .error(f"Can only inherit from classes, got {super.type_str()}")
+                }
+                let super_class = super.as_class()
+                // Trust compiler that base is a class
+                let base_class = base.as_class()
+
+                for it in super_class.methods.iter() {
+                    base_class.methods[it.key] = it.value
+                }
+                .stack.pop()
             }
             Null => .stack.push(Value::Null())
             True => .stack.push(Value::True())
