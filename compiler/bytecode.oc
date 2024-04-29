@@ -157,7 +157,7 @@ def Chunk::read_literal(&this, off: &u32): Value {
     return .literal(idx)
 }
 
-def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = null): u32 {
+def Chunk::disassemble_inst(&this, off: u32, show_source: bool, found_chunks: &Vector<&Chunk> = null): u32 {
 
     let cur_span = .span_for_offset(off)
     let prev_span = if off > 0 then .span_for_offset(off - 1) else cur_span
@@ -165,9 +165,11 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
     let prev_line = prev_span.start.line
 
     if off == 0 or cur_line != prev_line {
-        if off > 0 then print("\n")
+        if show_source {
+            if off > 0 then print("\n")
+        }
         print(f"{cur_line:4d} ")
-        if .source? {
+        if .source? and show_source {
             let span_str = get_line_string(.source, cur_span)
             if span_str.len > 0 {
                 println(f"{span_str}")
@@ -220,7 +222,7 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
             print(f"CloseFunction: ")
             code.obj.print()
             for let i = 0u16; i < code.num_upvalues; i += 1 {
-                print(`\n         |- upval [{i}]: local: {.read_u8(&off) as bool}, slot: {.read_u16(&off)}`)
+                print(`\n           - upval [{i}]: local: {.read_u8(&off) as bool}, slot: {.read_u16(&off)}`)
             }
             print("\n")
             if found_chunks? {
@@ -252,7 +254,7 @@ def Chunk::dump(&this) {
     let off = 0
     let line = 0
     while off < .code.size {
-        off = .disassemble_inst(off, chunks_to_dump)
+        off = .disassemble_inst(off, show_source: true, chunks_to_dump)
     }
 
     for chunk in chunks_to_dump.iter() {

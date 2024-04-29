@@ -380,7 +380,7 @@ def VM::debug_dump_inst(&this) {
     }
 
     let off = (.ip - .chunk.code.data) as u32
-    .chunk.disassemble_inst(off)
+    .chunk.disassemble_inst(off, show_source: false)
 }
 
 def VM::capture_upvalue(&this, slot: u32): &UpValue {

@@ -991,6 +991,7 @@ def Parser::parse_class(&this): &AST {
     .class_stack.pop()
 
     let end = .consume(CloseCurly)
+    node.span = start.span.join(end.span)
     return node
 }
 
