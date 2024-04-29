@@ -5,6 +5,7 @@
 import std::mem
 import std::vector::{ Vector }
 import std::compact_map::{ Map }
+import std::sv::{ SV }
 
 import @bytecode::{ Chunk }
 
@@ -156,13 +157,13 @@ def Object::print(&this) {
     match .type {
         String => {
             let s = this as &String
-            print(`"{s.data}"`)
+            print(`"{s.sv}"`)
         }
         Function => {
             let c = this as &Function
-            let name = c.code.name.data
+            let name = c.code.name.sv
             if {
-                not name? or name == "" => print("<script>")
+                not name.data? or name == "" => print("<script>")
                 not c.upvalues? => print(f"<function {name}>")
                 else => print(f"<function {name}, {c.upvalues.size} captures>")
             }
@@ -170,14 +171,14 @@ def Object::print(&this) {
         FunctionCode => {
             let f = this as &FunctionCode
             if f.name? {
-                print(f"<code {f.name.data}>")
+                print(f"<code {f.name.sv}>")
             } else {
                 print("<code>")
             }
         }
         NativeFunction => {
             let nf = this as &NativeFunction
-            print(`<native function {nf.name.data}>`)
+            print(`<native {nf.name.sv}>`)
         }
         UpValue => {
             let uv = this as &UpValue
@@ -185,15 +186,15 @@ def Object::print(&this) {
         }
         Class => {
             let c = this as &Class
-            print(f"<class {c.name.data}>")
+            print(f"<class {c.name.sv}>")
         }
         Instance => {
             let i = this as &Instance
-            print(f"<instance {i.class.name.data}>")
+            print(f"<instance {i.class.name.sv}>")
         }
         Method => {
             let m = this as &Method
-            print(f"<method {m.func.code.name.data}>")
+            print(f"<method {m.func.code.name.sv}>")
         }
     }
 }
@@ -201,8 +202,7 @@ def Object::print(&this) {
 //! An *interned* string
 struct String {
     obj: Object
-    data: str
-    len: u32
+    sv: SV
     shash: u32
 }
 
@@ -211,8 +211,7 @@ def String::eq(&this, other: &String): bool => this == other
 
 //! Expects `obj` to already be initialized
 def String::init(&this, data: str, len: u32, shash: u32) {
-    .data = data
-    .len = len
+    .sv = SV(data, len)
     .shash = shash
 }
 
@@ -245,14 +244,16 @@ struct FunctionCode {
     obj: Object
     name: &String
     chunk: &Chunk
-    arity: u8
+    arity: u16
+    num_upvalues: u16
 }
 
 //! Expects `obj` to already be initialized
-def FunctionCode::init(&this, name: &String, chunk: &Chunk, arity: u8) {
+def FunctionCode::init(&this, name: &String, chunk: &Chunk, arity: u16, upvals: u16) {
     .name = name
     .chunk = chunk
     .arity = arity
+    .num_upvalues = upvals
     // this is owned by the function, so the GC doesn't need to
     // know about it
 }

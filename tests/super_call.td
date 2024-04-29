@@ -13,3 +13,4 @@ class Bar extends Foo {
 
 let b = Bar()
 b.b()
+

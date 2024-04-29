@@ -1,3 +1,3 @@
-/// fail: Cannot use `this` outside of a class
+/// fail: Variable this not found
 
 this = 5

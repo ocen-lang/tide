@@ -7,10 +7,8 @@ import .value::{
 }
 import ..compiler::{ Compiler }
 import .{ VM, ValueCompareString }
-
-const GC_DEBUG: bool = false
-const ALLOC_DEBUG: bool = false
-let STRESS_GC: bool = false
+import @opts
+import @utils::{ debug }
 
 const GC_HEAP_GROW_FACTOR: u64 = 2
 
@@ -43,10 +41,10 @@ def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
     // 8 byte size    Pointer to actual memory return from this function
     let old_base = if old? then old - 8 else null
     let old_size = if old? then *(old_base as &u64) else 0u64
-    if ALLOC_DEBUG then println(f"[GC MEM] Requested {new_size} bytes, old_ptr: {old}")
+    debug(opts::trace_allocs, f"[GC MEM] Requested {new_size} bytes, old_ptr: {old}")
 
     if old_size < new_size as u64 and not state::paused {
-        if bytes_allocated > next_gc or STRESS_GC {
+        if bytes_allocated > next_gc or opts::gc_stress {
             collect_garbage(state::vm, state::compiler)
             next_gc = bytes_allocated * GC_HEAP_GROW_FACTOR
         }
@@ -55,7 +53,7 @@ def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
     // free
     if new_size == 0 {
         mem::impl::free(old_base)
-        if ALLOC_DEBUG then println(f"[GC MEM] Deleted {old_size} bytes from {bytes_allocated} bytes allocated, {old}")
+        debug(opts::trace_allocs, f"[GC MEM] Deleted {old_size} bytes from {bytes_allocated} bytes allocated, {old}")
         bytes_allocated -= old_size as u64
         return null
     }
@@ -66,7 +64,7 @@ def gc_mem(old: untyped_ptr, new_size: u32): untyped_ptr {
         else => mem::impl::realloc(old_base, new_size + 8)
     }
     bytes_allocated += new_size as u64 - old_size as u64
-    if ALLOC_DEBUG then println(f"[GC MEM] Reallocated {old_size} -> {new_size} bytes, total: {bytes_allocated} bytes allocated, res={new_base+8}")
+    debug(opts::trace_allocs, f"[GC MEM] Reallocated {old_size} -> {new_size} bytes, total: {bytes_allocated} bytes allocated, res={new_base+8}")
     *(new_base as &u64) = new_size as u64
     return new_base + 8
 }
@@ -76,12 +74,11 @@ def gc_realloc(_: mem::State, ptr: untyped_ptr, old_size: u32, size: u32): untyp
 def gc_free(_: mem::State, ptr: untyped_ptr) => gc_mem(ptr, 0)
 
 def initialize_gc_allocator() {
-    if GC_DEBUG then println("[GC] Initializing GC allocator")
-    let stress_gc = std::libc::getenv("STRESS_GC")
-    if stress_gc? {
-        STRESS_GC = true
-    }
+    debug(opts::trace_gc, "[GC] Initializing GC allocator")
     mem::set_allocator(null, gc_alloc, gc_free)
+    if opts::gc_stats_at_exit {
+        std::libc::atexit(print_stats)
+    }
 }
 
 /////
@@ -96,14 +93,14 @@ let num_garbage_collections: u32 = 0
 //!
 //! Precondition: First field of `T` must be a `Object` field.
 def allocate_object<T>(type: ObjectType, vm: &VM, compiler: &Compiler = null): &T {
-    if GC_DEBUG then println(f"[GC] Requesting allocation of object {type}")
+    debug(opts::trace_gc, f"[GC] Requesting allocation of object {type}")
     let res = mem::alloc<T>()
     res.obj.type = type
     res.obj.next = vm.objects
     res.obj.marked = false
     vm.objects = &res.obj
     num_objects_allocated += 1
-    if GC_DEBUG then println(`[GC] ({res:p}) Allocated object {type}`)
+    debug(opts::trace_gc, `[GC] ({res:p}) Allocated object {type}`)
     return res
 }
 
@@ -111,7 +108,7 @@ def allocate_object<T>(type: ObjectType, vm: &VM, compiler: &Compiler = null): &
 def free_object(obj: &Object, vm: &VM) {
     num_objects_freed += 1
 
-    if GC_DEBUG {
+    if opts::trace_gc {
         print(`[GC] ({obj:p}) Freeing object {obj.type}: `)
         obj.print()
         println("")
@@ -121,9 +118,9 @@ def free_object(obj: &Object, vm: &VM) {
         String => {
             let s = obj as &String
             // NOTE: Before we free this, make sure we remove it from the string table.
-            let vcd = ValueCompareString(s.data, s.len, s.shash)
+            let vcd = ValueCompareString(s.sv, s.shash)
             vm.strings.remove(vcd)
-            s.data.free()
+            s.sv.data.free()
         }
         Function => {
             let c = obj as &Function
@@ -163,7 +160,7 @@ def GarbageCollector::free(&this) {
 def GarbageCollector::mark_object(&this, obj: &Object) {
     if not obj? return
 
-    if GC_DEBUG {
+    if opts::trace_gc {
         print(`[GC] ({obj:p}) Marking object {obj.type}: `)
         obj.print()
         println("")
@@ -191,7 +188,7 @@ def GarbageCollector::mark_roots(&this) {
         .mark_value(value)
     }
 
-    for value in .vm.tmp.iter() {
+    for value in .vm.gcs.iter() {
         .mark_value(value)
     }
 
@@ -216,7 +213,7 @@ def GarbageCollector::mark_roots(&this) {
 
 def GarbageCollector::blacken_object(&this, obj: &Object) {
     if not obj? return
-    if GC_DEBUG {
+    if opts::trace_gc {
         print(`[GC] Blackening object {obj} : `)
         obj.print()
         println("")
@@ -311,17 +308,17 @@ def GarbageCollector::sweep_unmarked(&this) {
         }
     }
     .vm.grays.clear()
-    if GC_DEBUG and freed > 0 {
+    if opts::trace_gc and freed > 0 {
         println(`[GC] Freed {freed} objects`)
     }
 }
 
 def GarbageCollector::run(&this) {
-    if GC_DEBUG then println("[GC] === BEGIN ===")
+    debug(opts::trace_gc, "[GC] === BEGIN ===")
     .mark_roots()
     .trace_references()
     .sweep_unmarked()
-    if GC_DEBUG then println("[GC] === END ===")
+    debug(opts::trace_gc, "[GC] === END ===")
 }
 
 def collect_garbage(vm: &VM, compiler: &Compiler) {
@@ -336,18 +333,11 @@ def collect_garbage(vm: &VM, compiler: &Compiler) {
     state::paused = false
 }
 
-def print_stats(vm: &VM) {
+def print_stats() {
     println("[GC] === STATS ===")
     println(`[GC]           Num GCs: {num_garbage_collections}`)
     println(`[GC] Allocated objects: {num_objects_allocated}`)
     println(`[GC]     Freed objects: {num_objects_freed}`)
-    if vm.objects? {
-        let num = 0
-        for let cur = vm.objects; cur?; cur = cur.next {
-            num++
-        }
-        println(`[GC]     Remaining objects: {num}`)
-    }
     println(`[GC] Remaining bytes allocated: {bytes_allocated}`)
     println("[GC] === END ===")
 }

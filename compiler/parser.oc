@@ -458,13 +458,6 @@ def Parser::parse_atom(&this, end_type: TokenType): &AST {
             let tok = .consume(CharLiteral)
             node.u.char_literal = tok.text
         }
-        This => {
-            let tok = .consume(This)
-            if .class_stack.is_empty() {
-                .error(Error::new(tok.span, "Cannot use `this` outside of a class"))
-            }
-            node = AST::new_ident(tok.text, tok.span)
-        }
         Identifier => {
             let tok = .consume(Identifier)
             node = AST::new_ident(tok.text, tok.span)
@@ -1030,13 +1023,14 @@ def Parser::parse_for(&this): &AST {
     return node
 }
 
+
 def Parser::parse_statement(&this): &AST {
     let node = null as &AST
     let start_span = .token().span
 
     match .token().type {
         OpenCurly => node = .parse_block()
-        Def => node = .parse_function(Function)
+        AtSign | Def => node = .parse_function(Function)
         Class => node = .parse_class()
         Return => {
             .consume(Return)
@@ -1171,6 +1165,13 @@ def Parser::parse_function_body(&this): &AST => match .token().type {
 }
 
 def Parser::parse_function(&this, type: FunctionType): &AST {
+    let decos = Vector<&AST>::new(capacity: 1)
+    while .token_is(AtSign) {
+        let tok = .consume(AtSign)
+        let expr = .parse_expression(end_type: Newline)
+        decos.push(expr)
+    }
+
     let start = .consume(Def)
 
     let name = .consume(Identifier)
@@ -1194,19 +1195,14 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
     .consume(OpenParen)
     let found_this_arg = false
     while not .token_is(CloseParen) {
-        if func.params.size == 0 and expect_this_arg and .token_is(This) {
-            // Don't actually need to add `this` to the params list, since
-            // we special-case this when binding methods.
+        let var_name = .consume(Identifier)
+        if func.params.size == 0 and var_name.text == "this" {
             found_this_arg = true
-            .consume(This)
-
-        } else {
-            let var_name = .consume(Identifier)
-            let var = Variable::new()
-            var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
-            func.params.push(var)
-            .add_doc_comment(var.sym, var_name)
         }
+        let var = Variable::new()
+        var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
+        func.params.push(var)
+        .add_doc_comment(var.sym, var_name)
 
         if not .token_is(CloseParen) {
             .consume(Comma)
@@ -1223,7 +1219,7 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
     if not body? return null
 
     func.body = body
-
+    func.decorators = decos
     .cur_func = null
     func.span = start.span.join(func.body.span)
     return node
@@ -1437,6 +1433,7 @@ def Parser::load_file(&this, filename: str, contents_str: str = null) {
     for error in .lexer.errors.iter() {
         .error(error)
     }
+    .ns.file_source = contents.data as str
 }
 
 def Parser::parse_file(&this, filename: str, file_contents: str = null): &AST {

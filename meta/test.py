@@ -60,10 +60,8 @@ def get_expected(filename) -> Optional[Expected]:
     return Expected(Result.SKIP_REPORT, None)
 
 def handle_test(interpreter: str, num: int, path: Path, expected: Expected) -> Tuple[bool, str, Path]:
-    os.environ["LOG"] = "ERROR"
-    os.environ["STRESS_GC"] = "1"
     process = run(
-        [interpreter, str(path)],
+        [interpreter, str(path), "--gc-stress"],
         stdout=PIPE,
         stderr=PIPE
     )

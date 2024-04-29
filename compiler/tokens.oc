@@ -125,7 +125,6 @@ enum TokenType {
     Import
     Yield
     While
-    This
     Super
 }
 
@@ -154,7 +153,6 @@ def TokenType::from_text(text: SV): TokenType => match text {
     "import" => Import
     "yield" => Yield
     "while" => While
-    "this" => This
     "super" => Super
     else => Identifier
 }
@@ -185,7 +183,6 @@ def TokenType::str(this): str => match this {
     Import => "import"
     Yield => "yield"
     While => "while"
-    This => "this"
     Super => "super"
 
     // Others

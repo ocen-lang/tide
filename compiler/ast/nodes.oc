@@ -243,6 +243,7 @@ struct Function {
     body: &AST
     exits: bool
     span: Span
+    decorators: &Vector<&AST>
 
     operator_overloads: &Vector<Operator>
 }
@@ -463,6 +464,7 @@ struct Namespace {
     statements: &Vector<&AST>
     sym: &Symbol
     span: Span
+    file_source: str
 }
 
 def Namespace::new(): &Namespace {

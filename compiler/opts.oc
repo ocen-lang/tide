@@ -1,0 +1,22 @@
+//! Holds options that are used to configure the compiler/vm
+
+//! Dump out the generate bytecode
+let dump_code: bool = false;
+
+//! Trace the instructions the VM is executing
+let trace_vm: bool = false;
+
+//! Print the stack after each instruction.
+//! Only works if {{trace_vm}} is enabled
+let trace_stack: bool = false;
+
+//! Print out debug information from GC
+let trace_gc: bool = false;
+
+//! Print out debug information about every allocation
+let trace_allocs: bool = false;
+
+//! Run GC after every allocation (not frees)
+let gc_stress: bool = false;
+
+let gc_stats_at_exit: bool = false;

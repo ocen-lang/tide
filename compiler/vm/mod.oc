@@ -3,12 +3,13 @@ import std::compact_map::{ Map }
 import std::span::{ Location, Span }
 import std::traits::hash::{ hash_bytes }
 import std::mem
+import std::sv::{ SV }
 import std::logging::{ log }
 
 import ..compiler::{ Compiler }
+import @opts
 import @errors::{ Error }
 import @bytecode::{ Chunk, OpCode }
-import @main::debug
 import .gc
 import .value::{
     Value, String, Object, ObjectType,
@@ -20,18 +21,16 @@ import .native
 //! Wrapper around a string that forces comparison by value, not
 //! just by a pointer (like for the interned strings we use in
 //! the rest of the language).
-[formatting "%.*s" "$.len,$.data"]
+[formatting "%.*s" "$.sv.len,$.sv.data"]
 struct ValueCompareString {
-    data: str
-    len: u32
+    sv: SV
     shash: u32
 }
 
 def ValueCompareString::hash(this): u32 => .shash
 def ValueCompareString::eq(this, other: ValueCompareString): bool {
     if .shash != other.shash return false
-    if .len != other.len return false
-    return std::libc::memcmp(.data, other.data, .len) == 0
+    return .sv == other.sv
 }
 
 struct CallFrame {
@@ -64,9 +63,12 @@ struct VM {
     //! Used for GC tracking
     grays: &Vector<&Object>
 
-    //! Temp area to hold objects while we are processing
-    //! stuff, so the GC can see them.
-    tmp: &Vector<Value>
+    //! (G)arbage (C)ollector (S)tack
+    //!
+    //! Holds objects we want to keep alive during
+    //! a GC collection, but don't semantically belong
+    //! on the evaluation stack.
+    gcs: &Vector<Value>
 }
 
 def VM::make(): VM {
@@ -84,7 +86,7 @@ def VM::make(): VM {
         open_upvalues: null,
         objects: null,
         grays: Vector<&Object>::new(),
-        tmp: Vector<Value>::new(capacity: 16)
+        gcs: Vector<Value>::new(capacity: 16)
     )
     vm.init_string = vm.copy_string("init", 4).as_string()
     return vm
@@ -96,6 +98,7 @@ def VM::free(&this) {
     .func = null
     .stack.clear()
     .globals.clear()
+    .gcs.clear()
     .init_string = null
 
     gc::collect_garbage(this, null)
@@ -105,21 +108,21 @@ def VM::free(&this) {
     .strings.free()
     .grays.free()
     .frames.free()
-    .tmp.free()
+    .gcs.free()
     log(Info, "VM freed")
 }
 
 def VM::intern_string(&this, s: &String): Value {
-    let candidate = ValueCompareString(s.data, s.len, s.shash)
+    let candidate = ValueCompareString(s.sv, s.shash)
     let val = Value::Object(&s.obj)
-    .tmp.push(val)
+    .gcs.push(val)
     .strings.insert(candidate, val)
-    .tmp.pop()
+    .gcs.pop()
     return val
 }
 
 def VM::take_string(&this, data: str, len: u32): Value {
-    let candidate = ValueCompareString(data, len, hash_bytes(data as &u8, len))
+    let candidate = ValueCompareString(SV(data, len), hash_bytes(data as &u8, len))
     let item = .strings.get_item(candidate)
     if item? {
         data.free()
@@ -134,7 +137,7 @@ def VM::take_string(&this, data: str, len: u32): Value {
 //! by the compiler. If this is being called during compile-time, then it must
 //! be passed in, otherwise it can be null.
 def VM::copy_string(&this, data: str, len: u32): Value {
-    let candidate = ValueCompareString(data, len, hash_bytes(data as &u8, len))
+    let candidate = ValueCompareString(SV(data, len), hash_bytes(data as &u8, len))
     let item = .strings.get_item(candidate)
     if item? return item.value
 
@@ -159,21 +162,21 @@ def VM::add(&this, a: Value, b: Value): Value => if {
     a.is_int() and b.is_float() => Value::Float(a.as_int() as f64 + b.as_float())
     a.is_int() and b.is_int() => Value::Int(a.as_int() + b.as_int())
     a.is_string() and b.is_string() => {
-        let a_str = a.as_string()
-        let b_str = b.as_string()
+        let a_s = a.as_string().sv
+        let b_s = b.as_string().sv
         // FIXME: Don't pop and push these back on, just peek the values earlier
         //        We need to do this so that the GC can find the strings when we
         //        allocate the new one (which can trigger a GC collection)
-        .tmp.push(a)
-        .tmp.push(b)
-        let s = mem::alloc<char>(a_str.len + b_str.len + 1)
+        .gcs.push(a)
+        .gcs.push(b)
+        let s = mem::alloc<char>(a_s.len + b_s.len + 1)
         import std::libc::memcpy
-        memcpy(s            , a_str.data, a_str.len)
-        memcpy(s + a_str.len, b_str.data, b_str.len)
-        s[a_str.len + b_str.len] = '\0'
-        let res = .take_string(s, a_str.len + b_str.len)
-        .tmp.pop() // b
-        .tmp.pop() // a
+        memcpy(s         , a_s.data, a_s.len)
+        memcpy(s + a_s.len, b_s.data, b_s.len)
+        s[a_s.len + b_s.len] = '\0'
+        let res = .take_string(s, a_s.len + b_s.len)
+        .gcs.pop() // b
+        .gcs.pop() // a
         yield res
     }
     else => .error(f"Cant add {a.type_str()} and {b.type_str()}")
@@ -234,10 +237,10 @@ def VM::print_value(&this, val: Value) => if {
     val.is_bool() => print(`{val.as_bool()}`)
     val.is_null() => print("null")
     val.is_obj() => match val.as_obj().type {
-        String => print(`{val.as_string().data}`)
+        String => print(`{val.as_string().sv}`)
         Function => {
             let clos = val.as_function()
-            let name = val.as_function_code().name.data
+            let name = val.as_function_code().name.sv
 
             if {
                 clos.upvalues? => print(`<func "{name}, {clos.upvalues.size} captures">`)
@@ -246,14 +249,14 @@ def VM::print_value(&this, val: Value) => if {
             }
         }
         FunctionCode => {
-            let name = val.as_function_code().name.data
+            let name = val.as_function_code().name.sv
             if name == "" {
                 print("<script>")
             } else {
                 print(`<function "{name}">`)
             }
         }
-        NativeFunction => print(`<native {val.as_native_function().name.data}>`)
+        NativeFunction => print(`<native {val.as_native_function().name.sv}>`)
         UpValue => {
             let slot = val.as_upvalue().slot
             let upval = .stack.data[slot]
@@ -261,15 +264,15 @@ def VM::print_value(&this, val: Value) => if {
         }
         Class => {
             let name = val.as_class().name
-            print(f"<class {name.data}>")
+            print(f"<class {name.sv}>")
         }
         Instance => {
             let name = val.as_instance().class.name
-            print(f"<instance {name.data}>")
+            print(f"<instance {name.sv}>")
         }
         Method => {
             let method = val.as_method()
-            print(f"<method {method.func.code.name.data}>")
+            print(f"<method {method.func.code.name.sv}>")
         }
     }
     else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
@@ -305,10 +308,14 @@ def VM::setup_native_functions(&this) {
 }
 
 def VM::run(&this, code: &FunctionCode): i32 {
-    .stack.push(Value::Object(&code.obj))
-
+    if opts::trace_vm {
+        println("============================================")
+        println("[VM] Starting VM execution...")
+    }
+    // Put the script on the `tmp` stack so the GC can find it
+    .gcs.push(Value::Object(&code.obj))
     let func = .make_function(code)
-    .stack.pop()
+    .gcs.pop()
     .stack.push(Value::Object(&func.obj))
 
     .func = func
@@ -360,20 +367,19 @@ def VM::error(&this, msg: str) {
     .error_at(span, msg)
 }
 
-def VM::debug_dump_inst(&this, print_stack: bool) {
-    if print_stack {
-        print(f"\nStack (base {.stack_base}): ()")
-        for let i = 1; i < .stack.size; i++ {
+def VM::debug_dump_inst(&this) {
+    if opts::trace_stack {
+        print(f"\n(base {.stack_base}):")
+        for let i = 0; i < .stack.size; i++ {
             let val = .stack[i]
-            if i > 0 then print(" ")
+            print(" [")
             val.print()
+            print("]")
         }
         println("")
     }
 
     let off = (.ip - .chunk.code.data) as u32
-    let span = .chunk.span_for_offset(off)
-    print(`[VM] (L#{span.start.line:2d}) {off:4d}: `)
     .chunk.disassemble_inst(off)
 }
 
@@ -412,14 +418,15 @@ def VM::bind_method(&this, func: &Function) {
     .stack.push(Value::Object(&bound.obj))
 }
 
-def VM::call_function(&this, arity: u32, func: &Function) {
-    if func.code.arity as u32 != arity {
-        .error(f"Function {func.code.name.data} expected {func.code.arity} arguments, got {arity}")
+def VM::call_function(&this, arity: u32, func: &Function, is_method: bool) {
+    let effective_arity = arity + (if is_method then 1 else 0)
+    if func.code.arity as u32 != effective_arity {
+        .error(f"Function {func.code.name.sv} expected {func.code.arity} arguments, got {arity}")
     }
     let val = Value::Object(&func.obj)
-    .tmp.push(val)
+    .gcs.push(val)
     .push_frame(func, .stack.size - arity - 1)
-    .tmp.pop()
+    .gcs.pop()
 }
 
 def VM::call_value(&this, arity: u32, val: Value) {
@@ -428,7 +435,7 @@ def VM::call_value(&this, arity: u32, val: Value) {
     }
 
     match val.as_obj().type {
-        Function => .call_function(arity, val.as_function())
+        Function => .call_function(arity, val.as_function(), is_method: false)
         NativeFunction => {
             let func = val.as_native_function()
             let res = func.func(this, arity, &.stack.data[.stack.size - arity])
@@ -451,7 +458,7 @@ def VM::call_value(&this, arity: u32, val: Value) {
 
             let init_it = class.methods.get_item(.init_string)
             if init_it? {
-                .call_function(arity, init_it.value)
+                .call_function(arity, init_it.value, is_method: true)
 
             } else if arity != 0 {
                 .error(f"Can't provide arguments to class without init()")
@@ -460,7 +467,8 @@ def VM::call_value(&this, arity: u32, val: Value) {
         Method => {
             let method = val.as_method()
             .stack.data[.stack.size - arity - 1] = method.this_val
-            .call_function(arity, method.func)
+            // NOTE: The +1 here is because we implicitly pass `this` as the first argument
+            .call_function(arity, method.func, is_method: true)
         }
         FunctionCode => .error("Function should have been a func")
         else => .error(f"Can't call object of type {val.type_str()}")
@@ -473,7 +481,7 @@ def VM::main_loop(&this): i32 {
         //        causes perf to go from 1.2s -> 1.6s, _even if_
         //        the debug == false. Saving it into a local variable
         //        from the global one doesn't help either.
-        if debug then .debug_dump_inst(print_stack: true)
+        if opts::trace_vm then .debug_dump_inst()
 
         .cur_inst_ip = .ip
         let op = .read_u8() as OpCode
@@ -588,17 +596,29 @@ def VM::main_loop(&this): i32 {
                 let name = .read_literal().as_string()
                 let it = .globals.get_item(name)
                 if not it? {
-                    .error(f"Variable {name.data} not found")
+                    .error(f"Variable {name.sv} not found")
                 }
                 .stack.push(it.value)
             }
             SetGlobal => {
                 let name = .read_literal().as_string()
                 let value = .stack.back()
+                let it = .globals.get_item(name)
+                if not it? {
+                    .error(f"Variable {name.sv} not found")
+                }
+                it.value = value
+            }
+            DefineGlobal => {
+                let name = .read_literal().as_string()
+                let value = .stack.back()
                 .globals.insert(name, value)
+                .stack.pop()
             }
             GetLocal => {
-                let idx = .read_u16() + .stack_base as u16
+                let arg = .read_u16()
+                let idx = arg + .stack_base as u16
+                // print(`  [VM] Getting local {arg}, stack_base: {.stack_base}, idx: {idx}\n`)
                 .stack.push(.stack.data[idx])
             }
             SetLocal => {
@@ -637,7 +657,7 @@ def VM::main_loop(&this): i32 {
                     continue
                 }
 
-                .error(f"Member {name.data} not found")
+                .error(f"Member {name.sv} not found")
             }
             Invoke => {
                 let name = .read_literal().as_string()
@@ -653,7 +673,7 @@ def VM::main_loop(&this): i32 {
                     // NOTE: the instance is already on the stack in the
                     //       correct position to bind `this`, so we don't
                     //       need to do anything here.
-                    .call_function(arity, func)
+                    .call_function(arity, func, is_method: true)
 
                 } else {
                     let it = instance.fields.get_item(name)
@@ -684,21 +704,22 @@ def VM::main_loop(&this): i32 {
             True => .stack.push(Value::True())
             False => .stack.push(Value::False())
             CloseFunction => {
-                let arg = .stack.back()
+                let arg = .read_literal()
                 if not arg.is_function_code() {
                     .error(f"Expected function, got {arg.type_str()}")
                 }
                 let code = arg.as_function_code()
+                .gcs.push(arg)
                 let func = .make_function(code)
                 let func_val = Value::Object(&func.obj)
-                .stack.pop()
+                .gcs.pop()
                 .stack.push(func_val)
 
-                let num_upvals = .read_u16() as u32
-                if num_upvals > 0 {
-                    func.upvalues = Vector<&UpValue>::new()
+                let num_upvalues = code.num_upvalues as u32
+                if num_upvalues > 0 {
+                    func.upvalues = Vector<&UpValue>::new(capacity: num_upvalues)
                 }
-                for let i = 0; i < num_upvals; i++ {
+                for let i = 0; i < num_upvalues; i++ {
                     let is_local = .read_u8() == 1
                     let index = .read_u16() as u32
                     if is_local {

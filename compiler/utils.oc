@@ -1,0 +1,13 @@
+import std::variadic
+
+[variadic_format]
+//! If the condition is true, print the formatted string to the console.
+def debug(cond: bool, fmt: str, ...) {
+    if not cond return
+
+    let args: variadic::VarArgs
+    args.start(fmt)
+    variadic::vprintf(fmt, args)
+    args.end()
+    print("\n")
+}

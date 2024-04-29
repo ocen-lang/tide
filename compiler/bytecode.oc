@@ -3,6 +3,7 @@ import std::compact_map::{ Map }
 import std::span::{ Span }
 import std::buffer::{ Buffer }
 import std::mem
+import std::sv::{ SV }
 
 import @vm::value::{ Value, String, Object }
 import @vm::{ VM }
@@ -16,6 +17,7 @@ enum OpCode {
     SetLocal
     GetGlobal
     GetLocal
+    DefineGlobal
     Call
     Pop
     Add
@@ -53,6 +55,7 @@ struct Chunk {
     code: Buffer
     literals: &Vector<Value>
     literal_map: &Map<Value, u32>
+    source: str // Don't own this, it's in temporary memory
 
     // Line number for each instruction
     // TODO: Run-length encoding or something
@@ -155,32 +158,45 @@ def Chunk::read_literal(&this, off: &u32): Value {
 }
 
 def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = null): u32 {
+
+    let cur_span = .span_for_offset(off)
+    let prev_span = if off > 0 then .span_for_offset(off - 1) else cur_span
+    let cur_line = cur_span.start.line
+    let prev_line = prev_span.start.line
+
+    if off == 0 or cur_line != prev_line {
+        if off > 0 then print("\n")
+        print(f"{cur_line:4d} ")
+        if .source? {
+            let span_str = get_line_string(.source, cur_span)
+            if span_str.len > 0 {
+                println(f"{span_str}")
+                print("     ")
+            }
+        }
+    } else {
+        print("     ")
+    }
+    print(f"{off:04d}: ")
+
     let op = .read_u8(&off) as OpCode // Increments off
+    let name_width = 20
     match op {
-        Constant => { 
+        Constant => {
             let constant = .read_literal(&off)
             print("Constant: "); 
             constant.print();
             print("\n");
-
-            if constant.is_function_code() and found_chunks? {
-                let f = constant.as_function_code()
-                found_chunks.push(f.chunk)
-            }
         }
-        Add => println("Add")
-        Sub => println("Sub")
-        Mul => println("Mul")
-        Div => println("Div")
-        Halt => println("Halt")
-        Inherit => println("Inherit")
-        LessThan => println("LessThan")
-        GreaterThan => println("GreaterThan")
-        Equal => println("Equal")
-        SetMember | GetMember | Class | GetGlobal |
+        Add | Sub | Mul | Div | LessThan | GreaterThan |
+        Equal | Halt | Inherit | Null | True | False | Pop |
+        Return | CloseUpvalue => {
+            println(f"{op}")
+        }
+        SetMember | GetMember | Class | GetGlobal | DefineGlobal |
         SetGlobal| AttachMethod | Invoke | GetSuper => {
             let name = .read_literal(&off).as_obj() as &String
-            println(f"{op} {name.data}")
+            println(f"{op} {name.sv}")
         }
         Loop => {
             let arg = .read_u16(&off)
@@ -194,42 +210,53 @@ def Chunk::disassemble_inst(&this, off: u32, found_chunks: &Vector<&Chunk> = nul
             let arg = .read_u16(&off)
             println(f"Jump {arg}")
         }
-        Return => println("Return")
         Call => println(f"Call {.read_u8(&off)}")
         GetLocal | SetLocal | SetUpvalue | GetUpvalue => {
             let idx = .read_u16(&off)
             println(f"{op}: {idx}")
         }
         CloseFunction => {
-            let count = .read_u16(&off)
-            print(f"CloseFunction [{count}]: ")
-            for let i = 0u16; i < count; i += 1 {
-                if i > 0 print(" ")
-                print(`({.read_u8(&off) as bool}, {.read_u16(&off)})`)
+            let code = .read_literal(&off).as_function_code()
+            print(f"CloseFunction: ")
+            code.obj.print()
+            for let i = 0u16; i < code.num_upvalues; i += 1 {
+                print(`\n         |- upval [{i}]: local: {.read_u8(&off) as bool}, slot: {.read_u16(&off)}`)
             }
             print("\n")
+            if found_chunks? {
+                found_chunks.push(code.chunk)
+            }
         }
-        Null => println("Null")
-        Pop => println("Pop")
-        True => println("True")
-        False => println("False")
-        CloseUpvalue => println("CloseUpvalue")
     }
     return off
+}
+
+def get_line_string(source: str, span: Span): SV {
+    let start = span.start.index
+    while start > 0 and source[start - 1] != '\n' {
+        start -= 1
+    }
+
+    let end = span.start.index
+    while source[end] != '\n' and source[end] != '\0' {
+        end += 1
+    }
+    return SV(source + start, end - start)
 }
 
 def Chunk::dump(&this) {
     let chunks_to_dump = Vector<&Chunk>::new(capacity: 1)
     defer chunks_to_dump.free()
 
-    println(f"=== Chunk from {.start_span.start}, size: {.code.size} ===")
+    println(f"=== Chunk from {.start_span.start}, size: {.code.size} ===\n")
     let off = 0
+    let line = 0
     while off < .code.size {
-        print(f"{off:04d}: ")
         off = .disassemble_inst(off, chunks_to_dump)
     }
 
     for chunk in chunks_to_dump.iter() {
+        print("\n")
         chunk.dump()
     }
 }
