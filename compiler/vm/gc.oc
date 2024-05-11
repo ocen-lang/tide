@@ -5,6 +5,7 @@ import .value::{
     FunctionCode, NativeFunction, UpValue, Class,
     Instance, Method
 }
+import std::compact_map::{ Map }
 import ..compiler::{ Compiler }
 import .{ VM, ValueCompareString }
 import @opts
@@ -100,6 +101,12 @@ def allocate_object<T>(type: ObjectType, vm: &VM, compiler: &Compiler = null): &
     res.obj.marked = false
     vm.objects = &res.obj
     num_objects_allocated += 1
+
+    // Pause the GC while we initialize the object.
+    state::paused = true
+    res.obj.dict = Map<&String, Value>::new()
+    state::paused = false
+
     debug(opts::trace_gc, `[GC] ({res:p}) Allocated object {type}`)
     return res
 }
@@ -133,18 +140,13 @@ def free_object(obj: &Object, vm: &VM) {
             f.chunk.free()
             // NOTE: A function does not own its name
         }
-        Instance => {
-            let i = obj as &Instance
-            i.fields.free()
-        }
+        Instance => {}
         NativeFunction | UpValue | Method => {}
-        Class => {
-            let c = obj as &Class
-            // NOTE: We free the list, but not the objects themselves.
-            c.methods.free()
-        }
+        Class => {}
     }
 
+    // NOTE: We free the list, but not the objects themselves.
+    obj.dict.free()
     mem::free(obj)
 }
 
@@ -218,6 +220,12 @@ def GarbageCollector::blacken_object(&this, obj: &Object) {
         obj.print()
         println("")
     }
+    if obj.dict? {
+        for it in obj.dict.items.iter() {
+            .mark_object(&it.key.obj)
+            .mark_value(it.value)
+        }
+    }
     match obj.type {
         String => {}
         NativeFunction => {
@@ -233,12 +241,6 @@ def GarbageCollector::blacken_object(&this, obj: &Object) {
         Class => {
             let c = obj as &Class
             .mark_object(&c.name.obj)
-            if c.methods? and c.methods.items? {
-                for it in c.methods.items.iter() {
-                    .mark_object(&it.key.obj)
-                    .mark_object(&it.value.obj)
-                }
-            }
         }
         Method => {
             let m = obj as &Method
@@ -248,12 +250,6 @@ def GarbageCollector::blacken_object(&this, obj: &Object) {
         Instance => {
             let i = obj as &Instance
             .mark_object(&i.class.obj)
-            if i.fields? {
-                for it in i.fields.iter() {
-                    .mark_object(&it.key.obj)
-                    .mark_value(it.value)
-                }
-            }
         }
         FunctionCode => {
             let f = obj as &FunctionCode

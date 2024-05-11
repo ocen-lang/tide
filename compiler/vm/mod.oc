@@ -446,7 +446,6 @@ def VM::call_value(&this, arity: u32, val: Value) {
             let class = val.as_class()
             let instance = gc::allocate_object<Instance>(ObjectType::Instance, this)
             let val = Value::Object(&instance.obj)
-            instance.fields = null
 
             // instance.init allocates memory, so we need to push this on the stack
             // so the GC can find it if we collect
@@ -456,9 +455,12 @@ def VM::call_value(&this, arity: u32, val: Value) {
 
             .stack.data[.stack.size - arity - 1] = val
 
-            let init_it = class.methods.get_item(.init_string)
-            if init_it? {
-                .call_function(arity, init_it.value, is_method: true)
+            let res = .get_member(&class.obj, .init_string)
+            if res.found {
+                if not res.val.is_function() {
+                    .error(f"init() must be a function, got {res.val.type_str()}")
+                }
+                .call_function(arity, res.val.as_function(), is_method: true)
 
             } else if arity != 0 {
                 .error(f"Can't provide arguments to class without init()")
@@ -473,6 +475,46 @@ def VM::call_value(&this, arity: u32, val: Value) {
         FunctionCode => .error("Function should have been a func")
         else => .error(f"Can't call object of type {val.type_str()}")
     }
+}
+
+struct MemberResult {
+    val: Value
+    found: bool
+    is_method: bool
+}
+
+def VM::get_member(&this, obj: &Object, name: &String, is_method: bool = false): MemberResult {
+    // Always try accessing the object first
+    let it = obj.dict.get_item(name)
+    if it? {
+        return MemberResult(it.value, found: true, is_method)
+    }
+
+    // If this is an instance, try the class
+    if obj.type == Instance {
+        let instance = obj as &Instance
+        if instance.class? {
+            let res = .get_member(instance.class as &Object, name, is_method: true)
+            if res.found {
+                return res
+            }
+        }
+    }
+
+    // If this is a class, try the parent
+    if obj.type == Class {
+        let class = obj as &Class
+        if class.parent? {
+            let res = .get_member(class.parent as &Object, name, is_method)
+            if res.found {
+                return res
+            }
+        }
+    }
+
+    let res: MemberResult
+    res.found = false
+    return res
 }
 
 def VM::main_loop(&this): i32 {
@@ -569,10 +611,17 @@ def VM::main_loop(&this): i32 {
                 }
                 let super_class = super_val.as_class()
 
-                let method_it = super_class.methods.get_item(name)
-                if method_it? {
-                    .bind_method(method_it.value)
-                    continue
+                let res = .get_member(&super_class.obj, name)
+                if not res.found {
+                    .error(f"Method {name.sv} not found in super class")
+                }
+
+                if res.val.is_function() {
+                    .bind_method(res.val.as_function())
+
+                } else {
+                    .stack.pop() // Pop the instance
+                    .stack.push(res.val)
                 }
             }
             AttachMethod => {
@@ -583,7 +632,7 @@ def VM::main_loop(&this): i32 {
                 if not val.is_function() {
                     .error(f"Method must be a function, got {val.type_str()}")
                 }
-                class.methods[name] = val.as_function()
+                class.obj.dict[name] = val
 
                 .stack.pop()
             }
@@ -629,58 +678,56 @@ def VM::main_loop(&this): i32 {
                 let name = .read_literal().as_string()
                 let obj = .stack.back(0)
                 let value = .stack.back(1)
-                if not obj.is_instance() {
-                    .error(f"Can only set members on instances, got {obj.type_str()}")
+                if obj.is_immutable() {
+                    .error(f"Can't set member on object of type {obj.type_str()}")
                 }
-                let instance = obj.as_instance()
-                instance.fields[name] = value
-
+                obj.as_obj().dict[name] = value
                 .stack.pop()
             }
             GetMember => {
                 let name = .read_literal().as_string()
                 let obj = .stack.back()
-                if not obj.is_instance() {
+                if not obj.is_obj() {
                     .error(f"Can only get members on instances, got {obj.type_str()}")
                 }
-                let instance = obj.as_instance()
-                let it = instance.fields.get_item(name)
-                if it? {
+
+                let res = .get_member(obj.as_obj(), name)
+                if not res.found {
+                    .error(f"Member {name.sv} not found")
+                }
+
+                if res.val.is_function() and res.is_method {
+                    .bind_method(res.val.as_function())
+
+                } else {
                     .stack.pop()  // Pop the instance
-                    .stack.push(it.value)
-                    continue
+                    .stack.push(res.val)
                 }
-
-                let method_it = instance.class.methods.get_item(name)
-                if method_it? {
-                    .bind_method(method_it.value)
-                    continue
-                }
-
-                .error(f"Member {name.sv} not found")
             }
             Invoke => {
                 let name = .read_literal().as_string()
                 let arity = .read_u8() as u32
 
                 let obj = .stack.back(arity)
-                if not obj.is_instance() {
+                if not obj.is_obj() {
                     .error(f"Can't access a field/member on object of type {obj.type_str()}")
                 }
-                let instance = obj.as_instance()
-                let func = instance.class.methods.get(name, null)
-                if func? {
+
+                let res = .get_member(obj.as_obj(), name)
+                if not res.found {
+                    .error(f"Could not find field/method with name {name}")
+                }
+
+                println(f"Invoke {name.sv} on {obj.type_str()}, arity: {arity}, found: {res.found}, is_method: {res.is_method}")
+
+                if res.val.is_function() and res.is_method {
                     // NOTE: the instance is already on the stack in the
                     //       correct position to bind `this`, so we don't
                     //       need to do anything here.
-                    .call_function(arity, func, is_method: true)
+                    .call_function(arity, res.val.as_function(), is_method: true)
 
                 } else {
-                    let it = instance.fields.get_item(name)
-                    if not it? {
-                        .error(f"Could not find field/method with name {name}")
-                    }
-                    .call_value(arity, it.value)
+                    .call_value(arity, res.val)
                 }
 
             }
@@ -695,9 +742,7 @@ def VM::main_loop(&this): i32 {
                 // Trust compiler that base is a class
                 let base_class = base.as_class()
 
-                for it in super_class.methods.iter() {
-                    base_class.methods[it.key] = it.value
-                }
+                base_class.parent = super_class
                 .stack.pop()
             }
             Null => .stack.push(Value::Null())

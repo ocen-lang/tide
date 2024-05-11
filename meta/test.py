@@ -16,6 +16,7 @@ import sys
 import textwrap
 
 class Result(Enum):
+    EXIT_SUCCESS = 0
     EXIT_WITH_OUTPUT = 1
     FAIL = 2
     SKIP_SILENTLY = 3
@@ -53,6 +54,8 @@ def get_expected(filename) -> Optional[Expected]:
                 return Expected(Result.EXIT_WITH_OUTPUT, value)
             if name == "fail":
                 return Expected(Result.FAIL, value)
+            if name == "run":
+                return Expected(Result.EXIT_SUCCESS, None)
 
             print(f'[-] Invalid parameter in {filename}: {line}')
             break
@@ -87,13 +90,14 @@ def handle_test(interpreter: str, num: int, path: Path, expected: Expected) -> T
         stderr = textwrap.indent(process.stderr.decode("utf-8"), " "*10).strip()
         return False, f"Failed:\n  code: {process.returncode}\n  stdout: {stdout}\n  stderr: {stderr}", path
 
-    assert expected.type == Result.EXIT_WITH_OUTPUT
-    output = process.stdout.decode('utf-8').strip()
-    output = re.sub(r"[\s\r\n]+", " ", output)
-    expected_out = expected.value
+    if expected.type != Result.EXIT_SUCCESS:
+        assert expected.type == Result.EXIT_WITH_OUTPUT
+        output = process.stdout.decode('utf-8').strip()
+        output = re.sub(r"[\s\r\n]+", " ", output)
+        expected_out = expected.value
 
-    if expected_out not in output:
-        return False, f'Incorrect output produced\n  expected: {repr(expected_out)}\n  got: {repr(output)}', path
+        if expected_out not in output:
+            return False, f'Incorrect output produced\n  expected: {repr(expected_out)}\n  got: {repr(output)}', path
 
     allocated_objects = re.search(r'\[GC\]\s*Allocated objects: (\d+)', output)
     if not allocated_objects:

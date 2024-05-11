@@ -131,6 +131,17 @@ def Value::print(this) => if {
     }
 }
 
+def Value::is_immutable(this): bool => if {
+    not .is_obj() => true
+    else => {
+        let obj = .as_obj()
+        yield match obj.type {
+            String | FunctionCode | NativeFunction => true
+            else => false
+        }
+    }
+}
+
 enum ObjectType {
     String
     NativeFunction
@@ -150,6 +161,7 @@ enum ObjectType {
 struct Object {
     type: ObjectType
     next: &Object
+    dict: &Map<&String, Value>
     marked: bool
 }
 
@@ -274,23 +286,20 @@ def NativeFunction::init(&this, name: &String, func: NativeFunctionType) {
 struct Class {
     obj: Object
     name: &String
-    methods: &Map<&String, &Function>
+    parent: &Class
 }
 
 def Class::init(&this, name: &String) {
     .name = name
-    .methods = Map<&String, &Function>::new()
 }
 
 struct Instance {
     obj: Object
     class: &Class
-    fields: &Map<&String, Value>
 }
 
 def Instance::init(&this, class: &Class) {
     .class = class
-    .fields = Map<&String, Value>::new()
 }
 
 struct Method {

@@ -1,16 +1,13 @@
-/// skip
-/// out: a 1 b 1 c 1
+/// out: 9
 
 class Foo {
     def b(this) => 6
 }
 
 class Bar extends Foo {
-    def b(this) {
-        super.b()
-    }
+    def b(this) => super.b() + 3
 }
 
 let b = Bar()
-b.b()
+print(b.b())
 
