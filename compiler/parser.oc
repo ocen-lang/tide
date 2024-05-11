@@ -489,10 +489,6 @@ def Parser::parse_atom(&this, end_type: TokenType): &AST {
         }
         Dot => {
             let tok = .consume(Dot)
-            if not .cur_func? or (.cur_func.type != Method and .cur_func.type != Constructor) {
-                .error(Error::new(tok.span, "Cannot use dot shorthand outside of a method"))
-                return AST::new(Error, tok.span)
-            }
 
             let lhs = AST::new(Identifier, tok.span)
             lhs.u.ident.name = SV::from_str("this")
@@ -980,7 +976,7 @@ def Parser::parse_class(&this): &AST {
     }
 
     while not .token_is_eof_or(CloseCurly) {
-        let method = .parse_function(Method)
+        let method = .parse_function()
         if method? node.u.class.methods.push(method)
     }
 
@@ -1031,7 +1027,7 @@ def Parser::parse_statement(&this): &AST {
 
     match .token().type {
         OpenCurly => node = .parse_block()
-        AtSign | Def => node = .parse_function(Function)
+        AtSign | Def => node = .parse_function()
         Class => node = .parse_class()
         Return => {
             .consume(Return)
@@ -1165,7 +1161,7 @@ def Parser::parse_function_body(&this): &AST => match .token().type {
     else => .parse_block()
 }
 
-def Parser::parse_function(&this, type: FunctionType): &AST {
+def Parser::parse_function(&this): &AST {
     let decos = Vector<&AST>::new(capacity: 1)
     while .token_is(AtSign) {
         let tok = .consume(AtSign)
@@ -1176,13 +1172,7 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
     let start = .consume(Def)
 
     let name = .consume(Identifier)
-    let expect_this_arg = (type == Method)
-
-    if type == Method and name.text == "init" {
-        type = Constructor
-    }
-
-    let func = Function::new(type)
+    let func = Function::new()
     let node = AST::new(Function, start.span.join(name.span))
     node.u.func = func
 
@@ -1194,12 +1184,8 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
     .add_doc_comment(func.sym, start)
 
     .consume(OpenParen)
-    let found_this_arg = false
     while not .token_is(CloseParen) {
         let var_name = .consume(Identifier)
-        if func.params.size == 0 and var_name.text == "this" {
-            found_this_arg = true
-        }
         let var = Variable::new()
         var.sym = Symbol::from_variable(var_name.text, var, var_name.span)
         func.params.push(var)
@@ -1208,9 +1194,6 @@ def Parser::parse_function(&this, type: FunctionType): &AST {
         if not .token_is(CloseParen) {
             .consume(Comma)
         }
-    }
-    if expect_this_arg and not found_this_arg {
-        .error(Error::new(func.sym.span, "Method must have a `this` as first argument"))
     }
     let end_span = .consume(CloseParen).span
 

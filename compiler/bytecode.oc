@@ -196,9 +196,14 @@ def Chunk::disassemble_inst(&this, off: u32, show_source: bool, found_chunks: &V
             println(f"{op}")
         }
         SetMember | GetMember | Class | GetGlobal | DefineGlobal |
-        SetGlobal| AttachMethod | Invoke | GetSuper => {
+        SetGlobal| AttachMethod | GetSuper => {
             let name = .read_literal(&off).as_obj() as &String
             println(f"{op} {name.sv}")
+        }
+        Invoke => {
+            let name = .read_literal(&off).as_obj() as &String
+            let argc = .read_u8(&off)
+            println(f"Invoke {name.sv} {argc}")
         }
         Loop => {
             let arg = .read_u16(&off)

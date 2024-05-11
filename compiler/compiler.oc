@@ -31,10 +31,9 @@ struct Compiler {
     locals: &Vector<LocalVar>
     scope_depth: u32
     enclosing: &Compiler
-    function_type: FunctionType
 }
 
-def Compiler::new(vm: &VM, sym: &Symbol, type: FunctionType, enclosing: &Compiler = null): &Compiler {
+def Compiler::new(vm: &VM, sym: &Symbol, enclosing: &Compiler = null): &Compiler {
     let compiler = mem::alloc<Compiler>()
 
     let chunk = Chunk::new(sym.span)
@@ -53,20 +52,14 @@ def Compiler::new(vm: &VM, sym: &Symbol, type: FunctionType, enclosing: &Compile
         locals,
         scope_depth: 0,
         enclosing,
-        function_type: type
     )
     gc::set_compiler(compiler)
 
     let name_val = compiler.make_str(sym.name)
     func.init(name_val.as_string(), chunk, 0, 0) // Replace arity later...
 
-    // For functions and scripts, add a dummy local variable. We want to handle method
-    // and function calls the same way, but methods implicitly pass `this`, and so we
-    // need to account for that in the stack frame.
-    match type {
-        Function | Script => locals.push(LocalVar(SV::from_str(""), sym.span, 0, false))
-        else => {}
-    }
+    // Add a dummy local variable to keep the function around, and not be collected
+    locals.push(LocalVar(SV::from_str(""), sym.span, 0, false))
 
     return compiler
 }
@@ -407,7 +400,6 @@ def Compiler::compile_function(&this, node: &AST, func: &nodes::Function) {
     let cc = Compiler::new(
         .vm,
         func.sym,
-        func.type,
         enclosing: this
     )
     cc.func.arity = func.params.size as u16
@@ -421,11 +413,7 @@ def Compiler::compile_function(&this, node: &AST, func: &nodes::Function) {
     cc.compile_statement(func.body)
 
     // Add a placeholder return statement if none was provided
-    if func.type == Constructor {
-        cc.chunk.push_with_arg_u16(GetLocal, 0, node.span)
-    } else {
-        cc.chunk.push_with_literal(.vm, Constant, Value::Null(), node.span)
-    }
+    cc.chunk.push_with_literal(.vm, Constant, Value::Null(), node.span)
     cc.chunk.push_op(Return, node.span)
     cc.end_scope(func.span)
     cc.func.num_upvalues = cc.upvars.size as u16
@@ -590,7 +578,7 @@ def Compiler::compile_ns(&this, root: &AST) {
 
 // TODO: More complex structures than just expressions?
 def compile_program(vm: &VM, root: &AST): &FunctionCode {
-    let compiler = Compiler::new(vm, root.u.ns.sym, Script)
+    let compiler = Compiler::new(vm, root.u.ns.sym)
     compiler.chunk.source = root.u.ns.file_source
 
     compiler.compile_ns(root)

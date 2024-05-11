@@ -1,4 +1,4 @@
-/// out: 5
+/// out: 5 5
 
 class Foo {
     def init(this, x) {
@@ -12,3 +12,4 @@ def m(t) => Foo.val + t.x
 Foo.foo = m
 
 print(x.foo())
+print(m(x))

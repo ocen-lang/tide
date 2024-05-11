@@ -237,7 +237,6 @@ enum FunctionType {
 }
 
 struct Function {
-    type: FunctionType
     sym: &Symbol
     params: &Vector<&Variable>
     body: &AST
@@ -248,9 +247,8 @@ struct Function {
     operator_overloads: &Vector<Operator>
 }
 
-def Function::new(type: FunctionType): &Function {
+def Function::new(): &Function {
     let func = mem::alloc<Function>()
-    func.type = type
     func.params = Vector<&Variable>::new()
     return func
 }

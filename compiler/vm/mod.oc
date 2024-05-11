@@ -38,6 +38,7 @@ struct CallFrame {
     chunk: &Chunk
     ip: &u8
     stack_base: u32
+    is_constructor: bool
 }
 
 struct VM {
@@ -48,6 +49,10 @@ struct VM {
     chunk: &Chunk
     ip: &u8
     stack_base: u32
+    // FIXME: Instead of doing this at runtime-level, make the compiler swallow
+    //        any returns inside a constructor, and directly generate the return
+    //        bytecode to return the instance.
+    is_constructor: bool
 
     cur_inst_ip: &u8
 
@@ -78,6 +83,7 @@ def VM::make(): VM {
         chunk: null,
         ip: null,
         stack_base: 0,
+        is_constructor: false,
         cur_inst_ip: null,
         stack: Vector<Value>::new(capacity: 256),
         globals: Map<&String, Value>::new(),
@@ -156,6 +162,11 @@ def VM::make_function(&this, code: &FunctionCode): &Function {
     return func
 }
 
+// We don't want to allocate new memory for every string concat operation,
+// Since we don't know if the resulting string is already interned or not.
+const STR_CONCAT_TMP_BUF_SIZE: u32 = 1024 * 16  // 16K
+let str_concat_tmp_buf: [char; STR_CONCAT_TMP_BUF_SIZE]
+
 def VM::add(&this, a: Value, b: Value): Value => if {
     a.is_float() and b.is_float() => Value::Float(a.as_float() + b.as_float())
     a.is_float() and b.is_int() => Value::Float(a.as_float() + b.as_int() as f64)
@@ -169,12 +180,24 @@ def VM::add(&this, a: Value, b: Value): Value => if {
         //        allocate the new one (which can trigger a GC collection)
         .gcs.push(a)
         .gcs.push(b)
-        let s = mem::alloc<char>(a_s.len + b_s.len + 1)
+        let len = a_s.len + b_s.len
+
         import std::libc::memcpy
-        memcpy(s         , a_s.data, a_s.len)
-        memcpy(s + a_s.len, b_s.data, b_s.len)
-        s[a_s.len + b_s.len] = '\0'
-        let res = .take_string(s, a_s.len + b_s.len)
+        let res = if len + 1 < STR_CONCAT_TMP_BUF_SIZE {
+            let s = str_concat_tmp_buf
+            memcpy(s         , a_s.data, a_s.len)
+            memcpy(s + a_s.len, b_s.data, b_s.len)
+            s[len] = '\0'
+            yield .copy_string(s, len)
+
+        } else {
+            let s = mem::alloc<char>(len + 1)
+            memcpy(s         , a_s.data, a_s.len)
+            memcpy(s + a_s.len, b_s.data, b_s.len)
+            s[len] = '\0'
+            yield .take_string(s, len)
+        }
+
         .gcs.pop() // b
         .gcs.pop() // a
         yield res
@@ -337,15 +360,23 @@ def VM::is_falsey(&this, val: Value): bool => if {
 
 def VM::push_frame(&this, func: &Function, stack_base: u32) {
     // Push current frame, and set up the new one
-    .frames.push(CallFrame(.func, .chunk, .ip, .stack_base))
+    .frames.push(CallFrame(.func, .chunk, .ip, .stack_base, .is_constructor))
     .func = func
     .chunk = func.code.chunk
     .ip = .chunk.code.data
     .stack_base = stack_base
+    .is_constructor = false     // We set this to true when we call a class
 }
 
-def VM::pop_frame(&this) {
+def VM::pop_frame(&this, return_val: Value) {
     // Discard all the stack variables...
+    if .is_constructor {
+        // If this was a constructor, return the instance
+        return_val = .stack[.stack_base + 1]
+    } else {
+        // Otherwise, return the value
+        .stack.push(return_val)
+    }
     .stack.size = .stack_base
 
     let frame = .frames.pop()
@@ -353,6 +384,9 @@ def VM::pop_frame(&this) {
     .chunk = frame.chunk
     .ip = frame.ip
     .stack_base = frame.stack_base
+    .is_constructor = frame.is_constructor
+
+    .stack.push(return_val)
 }
 
 [exits]
@@ -418,9 +452,8 @@ def VM::bind_method(&this, func: &Function) {
     .stack.push(Value::Object(&bound.obj))
 }
 
-def VM::call_function(&this, arity: u32, func: &Function, is_method: bool) {
-    let effective_arity = arity + (if is_method then 1 else 0)
-    if func.code.arity as u32 != effective_arity {
+def VM::call_function(&this, arity: u32, func: &Function) {
+    if func.code.arity as u32 != arity {
         .error(f"Function {func.code.name.sv} expected {func.code.arity} arguments, got {arity}")
     }
     let val = Value::Object(&func.obj)
@@ -429,13 +462,27 @@ def VM::call_function(&this, arity: u32, func: &Function, is_method: bool) {
     .gcs.pop()
 }
 
+// Moves the arguments on the stack to prepend the `this` value,
+// then calls the function.
+def VM::call_method(&this, arity: u32, func: &Function, this_val: Value) {
+    // Allocate space for one more element on the stack
+    .stack.push(.stack.back())
+    let N = .stack.size-1
+    // Move all the args up one
+    for let i = 0; i < arity; i++ {
+        .stack[N-i] = .stack[N-i-1]
+    }
+    .stack.data[N - arity] = this_val
+    .call_function(arity + 1, func)
+}
+
 def VM::call_value(&this, arity: u32, val: Value) {
     if not val.is_obj() {
         .error(f"Can't call object of type {val.type_str()}")
     }
 
     match val.as_obj().type {
-        Function => .call_function(arity, val.as_function(), is_method: false)
+        Function => .call_function(arity, val.as_function())
         NativeFunction => {
             let func = val.as_native_function()
             let res = func.func(this, arity, &.stack.data[.stack.size - arity])
@@ -460,17 +507,17 @@ def VM::call_value(&this, arity: u32, val: Value) {
                 if not res.val.is_function() {
                     .error(f"init() must be a function, got {res.val.type_str()}")
                 }
-                .call_function(arity, res.val.as_function(), is_method: true)
+                .call_method(arity, res.val.as_function(), val)
+                .is_constructor = true
 
             } else if arity != 0 {
                 .error(f"Can't provide arguments to class without init()")
             }
+
         }
         Method => {
             let method = val.as_method()
-            .stack.data[.stack.size - arity - 1] = method.this_val
-            // NOTE: The +1 here is because we implicitly pass `this` as the first argument
-            .call_function(arity, method.func, is_method: true)
+            .call_method(arity, method.func, method.this_val)
         }
         FunctionCode => .error("Function should have been a func")
         else => .error(f"Can't call object of type {val.type_str()}")
@@ -593,8 +640,7 @@ def VM::main_loop(&this): i32 {
 
                 } else {
                     .close_upvalue(.stack_base)
-                    .pop_frame()
-                    .stack.push(value)
+                    .pop_frame(value)
                 }
             }
             Class => {
@@ -718,13 +764,8 @@ def VM::main_loop(&this): i32 {
                     .error(f"Could not find field/method with name {name}")
                 }
 
-                println(f"Invoke {name.sv} on {obj.type_str()}, arity: {arity}, found: {res.found}, is_method: {res.is_method}")
-
                 if res.val.is_function() and res.is_method {
-                    // NOTE: the instance is already on the stack in the
-                    //       correct position to bind `this`, so we don't
-                    //       need to do anything here.
-                    .call_function(arity, res.val.as_function(), is_method: true)
+                    .call_method(arity, res.val.as_function(), obj)
 
                 } else {
                     .call_value(arity, res.val)
