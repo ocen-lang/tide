@@ -1,5 +1,6 @@
 import @vm::value::{ Value }
 import .{ VM }
+import std::math
 
 // FIXME: Move into ocen/std/time
 [extern "clock"] def c_clock(): u64
@@ -19,4 +20,12 @@ def print(vm: &VM, count: u32, args: &Value): Value {
     }
     print("\n")
     return Value::Null()
+}
+
+def int_abs(vm: &VM, count: u32, args: &Value): Value {
+    assert count == 1, "abs() takes exactly 1 argument"
+    let val = args[0]
+    assert val.is_int(), "abs() takes an integer argument"
+
+    return Value::Int(val.as_int().abs())
 }

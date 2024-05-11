@@ -14,7 +14,7 @@ import .gc
 import .value::{
     Value, String, Object, ObjectType,
     NativeFunctionType, NativeFunction, FunctionCode,
-    UpValue, Function, Class, Instance, Method
+    UpValue, Function, Class, Instance, Method, BuiltinType
 }
 import .native
 
@@ -74,6 +74,13 @@ struct VM {
     //! a GC collection, but don't semantically belong
     //! on the evaluation stack.
     gcs: &Vector<Value>
+
+
+    int_type: &BuiltinType
+    float_type: &BuiltinType
+    bool_type: &BuiltinType
+    string_type: &BuiltinType
+    null_type: &BuiltinType
 }
 
 def VM::make(): VM {
@@ -92,7 +99,13 @@ def VM::make(): VM {
         open_upvalues: null,
         objects: null,
         grays: Vector<&Object>::new(),
-        gcs: Vector<Value>::new(capacity: 16)
+        gcs: Vector<Value>::new(capacity: 16),
+        // These get filled in when we start the VM
+        int_type: null,
+        float_type: null,
+        bool_type: null,
+        string_type: null,
+        null_type: null
     )
     vm.init_string = vm.copy_string("init", 4).as_string()
     return vm
@@ -297,6 +310,10 @@ def VM::print_value(&this, val: Value) => if {
             let method = val.as_method()
             print(f"<method {method.func.code.name.sv}>")
         }
+        BuiltinType => {
+            let name = val.as_builtin_type().name
+            print(f"<type {name.sv}>")
+        }
     }
     else => .error(`Unhandled value in VM::print(): {val.u.uint:08x}`)
 }
@@ -309,7 +326,9 @@ def VM::read_u16(&this): u16 {
     return (a as u16) << 8 | (b as u16)
 }
 
-def VM::add_native_function(&this, name: str, func: NativeFunctionType) {
+def VM::add_native_function(&this, name: str, func: NativeFunctionType, dst: &Map<&String, Value> = null) {
+    if not dst? then dst = .globals
+
     let s = .copy_string(name, name.len())
     .stack.push(s)
 
@@ -318,7 +337,7 @@ def VM::add_native_function(&this, name: str, func: NativeFunctionType) {
     let value = Value::Object(&native_fn.obj)
     .stack.push(value)
 
-    .globals.insert(s.as_string(), value)
+    dst.insert(s.as_string(), value)
 
     // Pop the function and the name
     .stack.pop()
@@ -328,13 +347,36 @@ def VM::add_native_function(&this, name: str, func: NativeFunctionType) {
 def VM::setup_native_functions(&this) {
     .add_native_function("clock", native::clock)
     .add_native_function("print", native::print)
+
+    {
+        .add_builtin_type("int", &.int_type)
+        .add_native_function("abs", native::int_abs, .int_type.obj.dict)
+    }
+
+
+    .add_builtin_type("float", &.float_type)
+    .add_builtin_type("bool", &.bool_type)
+    .add_builtin_type("string", &.string_type)
+    .add_builtin_type("null", &.null_type)
+
 }
 
-def VM::run(&this, code: &FunctionCode): i32 {
+def VM::add_builtin_type(&this, name: str, dest: &&BuiltinType) {
+    let s = .copy_string(name, name.len())
+    .gcs.push(s)
+    let bi = gc::allocate_object<BuiltinType>(ObjectType::BuiltinType, this)
+    bi.init(s.as_string())
+    *dest = bi
+    .gcs.pop()   // s
+    .gcs.push(Value::Object(&bi.obj))
+}
+
+def VM::start_and_run(&this, code: &FunctionCode): i32 {
     if opts::trace_vm {
         println("============================================")
         println("[VM] Starting VM execution...")
     }
+
     // Put the script on the `tmp` stack so the GC can find it
     .gcs.push(Value::Object(&code.obj))
     let func = .make_function(code)
@@ -347,6 +389,7 @@ def VM::run(&this, code: &FunctionCode): i32 {
     .stack_base = 0
 
     .setup_native_functions()
+
     return .main_loop()
 }
 
@@ -462,9 +505,7 @@ def VM::call_function(&this, arity: u32, func: &Function) {
     .gcs.pop()
 }
 
-// Moves the arguments on the stack to prepend the `this` value,
-// then calls the function.
-def VM::call_method(&this, arity: u32, func: &Function, this_val: Value) {
+def VM::push_method_args(&this, arity: u32, this_val: Value) {
     // Allocate space for one more element on the stack
     .stack.push(.stack.back())
     let N = .stack.size-1
@@ -473,7 +514,27 @@ def VM::call_method(&this, arity: u32, func: &Function, this_val: Value) {
         .stack[N-i] = .stack[N-i-1]
     }
     .stack.data[N - arity] = this_val
-    .call_function(arity + 1, func)
+}
+
+// Moves the arguments on the stack to prepend the `this` value,
+// then calls the function.
+def VM::call_method_like(&this, arity: u32, obj: &Object, this_val: Value) => match obj.type {
+    Function => {
+        .push_method_args(arity, this_val)
+        .call_function(arity + 1, obj as &Function)
+    }
+    NativeFunction => {
+        .push_method_args(arity, this_val)
+        let func = obj as &NativeFunction
+        let res = func.func(this, arity + 1, &.stack.data[.stack.size - arity - 1])
+        .stack.size -= arity as u32 + 2  // Pop the arguments and the function
+        .stack.push(res)
+    }
+    Method => {
+        let method = obj as &Method
+        .call_method_like(arity, &method.func.obj, method.this_val)
+    }
+    else => .call_value(arity, Value::Object(obj))
 }
 
 def VM::call_value(&this, arity: u32, val: Value) {
@@ -502,12 +563,12 @@ def VM::call_value(&this, arity: u32, val: Value) {
 
             .stack.data[.stack.size - arity - 1] = val
 
-            let res = .get_member(&class.obj, .init_string)
+            let res = .get_member_obj(&class.obj, .init_string)
             if res.found {
                 if not res.val.is_function() {
                     .error(f"init() must be a function, got {res.val.type_str()}")
                 }
-                .call_method(arity, res.val.as_function(), val)
+                .call_method_like(arity, res.val.as_obj(), val)
                 .is_constructor = true
 
             } else if arity != 0 {
@@ -517,7 +578,7 @@ def VM::call_value(&this, arity: u32, val: Value) {
         }
         Method => {
             let method = val.as_method()
-            .call_method(arity, method.func, method.this_val)
+            .call_method_like(arity, &method.func.obj, method.this_val)
         }
         FunctionCode => .error("Function should have been a func")
         else => .error(f"Can't call object of type {val.type_str()}")
@@ -530,7 +591,7 @@ struct MemberResult {
     is_method: bool
 }
 
-def VM::get_member(&this, obj: &Object, name: &String, is_method: bool = false): MemberResult {
+def VM::get_member_obj(&this, obj: &Object, name: &String, is_method: bool = false): MemberResult {
     // Always try accessing the object first
     let it = obj.dict.get_item(name)
     if it? {
@@ -541,7 +602,7 @@ def VM::get_member(&this, obj: &Object, name: &String, is_method: bool = false):
     if obj.type == Instance {
         let instance = obj as &Instance
         if instance.class? {
-            let res = .get_member(instance.class as &Object, name, is_method: true)
+            let res = .get_member_obj(instance.class as &Object, name, is_method: true)
             if res.found {
                 return res
             }
@@ -552,7 +613,7 @@ def VM::get_member(&this, obj: &Object, name: &String, is_method: bool = false):
     if obj.type == Class {
         let class = obj as &Class
         if class.parent? {
-            let res = .get_member(class.parent as &Object, name, is_method)
+            let res = .get_member_obj(class.parent as &Object, name, is_method)
             if res.found {
                 return res
             }
@@ -563,6 +624,17 @@ def VM::get_member(&this, obj: &Object, name: &String, is_method: bool = false):
     res.found = false
     return res
 }
+
+def VM::get_member_value(&this, val: Value, name: &String, is_method: bool = false): MemberResult => if {
+    val.is_obj() => .get_member_obj(val.as_obj(), name, is_method)
+    val.is_int() => .get_member_obj(&.int_type.obj, name, is_method: true)
+    val.is_float() => .get_member_obj(&.float_type.obj, name, is_method: true)
+    val.is_bool() => .get_member_obj(&.bool_type.obj, name, is_method: true)
+    val.is_string() => .get_member_obj(&.string_type.obj, name, is_method: true)
+    val.is_null() => .get_member_obj(&.null_type.obj, name, is_method: true)
+    else => MemberResult(Value::Null(), found: false, is_method)
+}
+
 
 def VM::main_loop(&this): i32 {
     while true {
@@ -657,7 +729,7 @@ def VM::main_loop(&this): i32 {
                 }
                 let super_class = super_val.as_class()
 
-                let res = .get_member(&super_class.obj, name)
+                let res = .get_member_obj(&super_class.obj, name)
                 if not res.found {
                     .error(f"Method {name.sv} not found in super class")
                 }
@@ -737,7 +809,7 @@ def VM::main_loop(&this): i32 {
                     .error(f"Can only get members on instances, got {obj.type_str()}")
                 }
 
-                let res = .get_member(obj.as_obj(), name)
+                let res = .get_member_obj(obj.as_obj(), name)
                 if not res.found {
                     .error(f"Member {name.sv} not found")
                 }
@@ -754,18 +826,15 @@ def VM::main_loop(&this): i32 {
                 let name = .read_literal().as_string()
                 let arity = .read_u8() as u32
 
-                let obj = .stack.back(arity)
-                if not obj.is_obj() {
-                    .error(f"Can't access a field/member on object of type {obj.type_str()}")
-                }
+                let val = .stack.back(arity)
 
-                let res = .get_member(obj.as_obj(), name)
+                let res = .get_member_value(val, name)
                 if not res.found {
-                    .error(f"Could not find field/method with name {name}")
+                    .error(f"Could not find field/method with name {name.sv}")
                 }
 
-                if res.val.is_function() and res.is_method {
-                    .call_method(arity, res.val.as_function(), obj)
+                if res.is_method {
+                    .call_method_like(arity, res.val.as_obj(), val)
 
                 } else {
                     .call_value(arity, res.val)

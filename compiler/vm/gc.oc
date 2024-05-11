@@ -3,7 +3,7 @@ import std::mem
 import .value::{
     Value, Object, ObjectType, String, Function,
     FunctionCode, NativeFunction, UpValue, Class,
-    Instance, Method
+    Instance, Method, BuiltinType
 }
 import std::compact_map::{ Map }
 import ..compiler::{ Compiler }
@@ -142,7 +142,7 @@ def free_object(obj: &Object, vm: &VM) {
         }
         Instance => {}
         NativeFunction | UpValue | Method => {}
-        Class => {}
+        Class | BuiltinType => {}
     }
 
     // NOTE: We free the list, but not the objects themselves.
@@ -270,6 +270,10 @@ def GarbageCollector::blacken_object(&this, obj: &Object) {
                     .mark_object(&upvalue.obj)
                 }
             }
+        }
+        BuiltinType => {
+            let bt = obj as &BuiltinType
+            .mark_object(&bt.name.obj)
         }
     }
 }

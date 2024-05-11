@@ -87,6 +87,9 @@ def Value::as_function(this): &Function => .as_obj() as &Function
 def Value::is_method(this): bool => .is_obj_type(Method)
 def Value::as_method(this): &Method => .as_obj() as &Method
 
+def Value::is_builtin_type(this): bool => .is_obj_type(BuiltinType)
+def Value::as_builtin_type(this): &BuiltinType => .as_obj() as &BuiltinType
+
 def Value::Float(f: f64): Value => Value::from_float(f)
 def Value::True(): Value => Value::from_uint(BOOL_MASK | 3)
 def Value::False(): Value => Value::from_uint(BOOL_MASK | 2)
@@ -114,6 +117,10 @@ def Value::type_str(this): str => if {
             Class => "class"
             Instance => "instance"
             Method => "method"
+            BuiltinType => {
+                let bt = obj as &BuiltinType
+                yield bt.name.sv.data
+            }
         }
     }
     else => "<unknown>"
@@ -149,6 +156,7 @@ enum ObjectType {
     Class
     Instance
     Method
+    BuiltinType
 
     //! Representing the function code itself, not a closure
     FunctionCode
@@ -187,6 +195,10 @@ def Object::print(&this) {
             } else {
                 print("<code>")
             }
+        }
+        BuiltinType => {
+            let bt = this as &BuiltinType
+            print(f"<type {bt.name.sv}>")
         }
         NativeFunction => {
             let nf = this as &NativeFunction
@@ -311,4 +323,13 @@ struct Method {
 def Method::init(&this, this_val: Value, func: &Function) {
     .this_val = this_val
     .func = func
+}
+
+struct BuiltinType {
+    obj: Object
+    name: &String
+}
+
+def BuiltinType::init(&this, name: &String) {
+    .name = name
 }
